@@ -175,20 +175,68 @@ def run_deep_dive_analysis(
             "error": "Data ticker tidak cukup atau gagal diunduh.",
         }
 
-    future_fundamental_context = compute_future_fundamental_grade(deep_ticker, stock_df, macro_context)
-    stock_res = score_stock_smc(
-        stock_df,
-        flow_used=True,
-        flow_val=flow_val_local,
-        min_avg_volume=min_avg_volume,
-        min_price=min_price,
-        max_price=max_price,
-        mode=strategy_mode,
-        min_history_bars=min_history_bars,
-        macro_context=macro_context,
-        future_fundamental_context=future_fundamental_context,
-    )
-    fundamental = compute_fundamental_grade(deep_ticker)
+    try:
+        future_fundamental_context = compute_future_fundamental_grade(deep_ticker, stock_df, macro_context)
+    except Exception as exc:
+        future_fundamental_context = {
+            "current_fundamental_score": np.nan,
+            "current_fundamental_grade": "n/a",
+            "future_fundamental_score": np.nan,
+            "future_fundamental_grade": "n/a",
+            "future_fundamental_direction": "n/a",
+            "future_fundamental_confidence": np.nan,
+            "future_growth_proxy": np.nan,
+            "future_fundamental_momentum_score": np.nan,
+            "future_seasonal_anomaly_score": np.nan,
+            "future_inflection_score": np.nan,
+            "future_cash_flow_proxy": np.nan,
+            "future_balance_quality": np.nan,
+            "future_price_proxy": np.nan,
+            "future_cycle_support": np.nan,
+            "future_macro_score": np.nan,
+            "future_macro_adjusted_score": np.nan,
+            "future_macro_gate_ok": False,
+            "future_macro_gate_reason": f"future_fundamental_error: {type(exc).__name__}",
+            "expected_revenue_growth_next_q": np.nan,
+            "expected_eps_growth_next_q": np.nan,
+            "expected_margin_next_q": np.nan,
+            "future_moat_reason": f"future_fundamental_error: {type(exc).__name__}",
+            "future_reliability": np.nan,
+            "future_time_to_top": np.nan,
+            "future_time_to_bottom": np.nan,
+            "future_phase": "Unknown",
+        }
+    try:
+        stock_res = score_stock_smc(
+            stock_df,
+            flow_used=True,
+            flow_val=flow_val_local,
+            min_avg_volume=min_avg_volume,
+            min_price=min_price,
+            max_price=max_price,
+            mode=strategy_mode,
+            min_history_bars=min_history_bars,
+            macro_context=macro_context,
+            future_fundamental_context=future_fundamental_context,
+        )
+    except Exception as exc:
+        return {
+            "symbol": deep_ticker,
+            "stock_df": stock_df,
+            "bench_df": bench_df,
+            "macro_context": macro_context,
+            "stock_res": None,
+            "fundamental": None,
+            "future_context": future_fundamental_context,
+            "ifs_context": None,
+            "entry_plan": None,
+            "error": f"score_stock_smc failed: {type(exc).__name__}: {exc}",
+        }
+
+    try:
+        fundamental = compute_fundamental_grade(deep_ticker)
+    except Exception:
+        fundamental = {}
     stock_res["peg_ratio"] = fundamental.get("peg_ratio", np.nan)
     stock_res["trailing_pe"] = fundamental.get("trailing_pe", np.nan)
     stock_res["forward_pe"] = fundamental.get("forward_pe", np.nan)
@@ -204,28 +252,40 @@ def run_deep_dive_analysis(
     stock_res["expected_revenue_growth_next_q"] = future_fundamental_context.get("expected_revenue_growth_next_q", np.nan)
     stock_res["expected_eps_growth_next_q"] = future_fundamental_context.get("expected_eps_growth_next_q", np.nan)
     stock_res["expected_margin_next_q"] = future_fundamental_context.get("expected_margin_next_q", np.nan)
-    stock_res["expected_revenue_growth_next_q"] = future_fundamental_context.get("expected_revenue_growth_next_q", np.nan)
-    stock_res["expected_eps_growth_next_q"] = future_fundamental_context.get("expected_eps_growth_next_q", np.nan)
-    stock_res["expected_margin_next_q"] = future_fundamental_context.get("expected_margin_next_q", np.nan)
 
-    entry_plan = build_entry_plan(
-        stock_res,
-        entry_buffer_atr=entry_buffer_atr_local,
-        stop_loss_atr=stop_loss_atr_local,
-        target_1_atr=take_profit_1_atr_local,
-        target_2_atr=take_profit_2_atr_local,
-    )
+    try:
+        entry_plan = build_entry_plan(
+            stock_res,
+            entry_buffer_atr=entry_buffer_atr_local,
+            stop_loss_atr=stop_loss_atr_local,
+            target_1_atr=take_profit_1_atr_local,
+            target_2_atr=take_profit_2_atr_local,
+        )
+    except Exception as exc:
+        entry_plan = {
+            "entry_valid": False,
+            "entry_reason": f"build_entry_plan failed: {type(exc).__name__}",
+        }
     stock_res["entry_plan"] = entry_plan
     stock_res.update(entry_plan)
 
-    ifs_context = compute_institutional_forward_score(
-        symbol=deep_ticker,
-        price_df=stock_df,
-        bench_df=bench_df,
-        current_fundamental=fundamental,
-        future_context=future_fundamental_context,
-        technical_context=stock_res,
-    )
+    try:
+        ifs_context = compute_institutional_forward_score(
+            symbol=deep_ticker,
+            price_df=stock_df,
+            bench_df=bench_df,
+            current_fundamental=fundamental,
+            future_context=future_fundamental_context,
+            technical_context=stock_res,
+        )
+    except Exception as exc:
+        ifs_context = {
+            "ifs_score": np.nan,
+            "ifs_grade": "n/a",
+            "ifs_breakdown": {},
+            "ifs_detail": {},
+            "error": f"compute_institutional_forward_score failed: {type(exc).__name__}: {exc}",
+        }
     stock_res["ifs_score"] = ifs_context.get("ifs_score", np.nan)
     stock_res["ifs_grade"] = ifs_context.get("ifs_grade", "n/a")
     stock_res["ifs_breakdown"] = ifs_context.get("ifs_breakdown", {})

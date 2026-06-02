@@ -3,29 +3,74 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-from data_engine import _ticker_candidates
-from technical_analyst import _ensure_technical_columns, classify_8_phase, compute_cycle_features, _score_bucket
+try:
+    from data_engine import _ticker_candidates as _data_engine_ticker_candidates
+except Exception:
+    _data_engine_ticker_candidates = None
 
 try:
-    _ticker_candidates
-except NameError:
-    def _ticker_candidates(symbol: str) -> list[str]:
-        base = str(symbol).strip().upper()
-        if not base or base == "NAN":
-            return []
-        candidates: list[str] = []
-        def add(candidate: str) -> None:
-            candidate = str(candidate).strip().upper()
-            if candidate and candidate not in candidates:
-                candidates.append(candidate)
-        add(base)
-        if base.startswith("^"):
-            return candidates
-        if base.endswith(".JK"):
-            add(base[:-3])
-        else:
-            add(f"{base}.JK")
+    from technical_analyst import _ensure_technical_columns, classify_8_phase, compute_cycle_features, _score_bucket
+except Exception:
+    def _ensure_technical_columns(df: pd.DataFrame) -> pd.DataFrame:
+        return df.copy() if isinstance(df, pd.DataFrame) else pd.DataFrame()
+
+    def classify_8_phase(df: pd.DataFrame) -> dict:
+        return {"phase": "Unknown", "phase_confidence": 0.0}
+
+    def compute_cycle_features(close_series):
+        return (20, 999, False, {})
+
+    def _score_bucket(value: float, lo: float, hi: float, invert: bool = False) -> float:
+        if value is None or pd.isna(value):
+            return 50.0
+        if hi == lo:
+            return 50.0
+        x = (float(value) - lo) / (hi - lo)
+        x = float(np.clip(x, 0.0, 1.0))
+        if invert:
+            x = 1.0 - x
+        return float(np.clip(x * 100.0, 0.0, 100.0))
+
+
+def _ticker_candidates(symbol: str) -> list[str]:
+    if callable(_data_engine_ticker_candidates):
+        try:
+            out = list(_data_engine_ticker_candidates(symbol))
+            if out:
+                return out
+        except Exception:
+            pass
+    base = str(symbol).strip().upper()
+    if not base or base == "NAN":
+        return []
+    candidates: list[str] = []
+    def add(candidate: str) -> None:
+        candidate = str(candidate).strip().upper()
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    add(base)
+    if base.startswith("^"):
         return candidates
+    if base.endswith(".JK"):
+        add(base[:-3])
+    else:
+        add(f"{base}.JK")
+    return candidates
+
+try:
+    from data_engine import load_yf_info as _data_engine_load_yf_info
+except Exception:
+    _data_engine_load_yf_info = None
+
+def load_yf_info(symbol: str) -> dict:
+    if callable(_data_engine_load_yf_info):
+        try:
+            out = _data_engine_load_yf_info(symbol)
+            return out if isinstance(out, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
 
 def _coerce_float(value, default=np.nan):
     try:
@@ -361,7 +406,8 @@ def load_fundamental_snapshot(symbol: str) -> dict:
 
     info = {}
     resolved_symbol = base
-    for candidate in _ticker_candidates(base):
+    candidates = _ticker_candidates(base)
+    for candidate in candidates:
         info = load_yf_info(candidate)
         if info:
             resolved_symbol = str(info.get("_resolved_symbol", candidate))
@@ -1034,3 +1080,120 @@ def compute_future_fundamental_grade(
         "future_phase": phase_info.get("phase", "Unknown") if isinstance(phase_info, dict) else "Unknown",
     }
 
+
+
+# =========================================================
+# Safe public wrappers
+# =========================================================
+
+def _fundamental_snapshot_defaults(symbol: str = "") -> dict:
+    return {
+        "market_cap": np.nan,
+        "current_ratio": np.nan,
+        "debt_to_equity": np.nan,
+        "return_on_equity": np.nan,
+        "return_on_assets": np.nan,
+        "operating_margin": np.nan,
+        "gross_margin": np.nan,
+        "free_cashflow": np.nan,
+        "operating_cashflow": np.nan,
+        "peg_ratio": np.nan,
+        "trailing_pe": np.nan,
+        "forward_pe": np.nan,
+        "revenue_growth": np.nan,
+        "earnings_growth": np.nan,
+        "profit_margins": np.nan,
+        "revenue_growth_quarterly": np.nan,
+        "revenue_growth_annual": np.nan,
+        "earnings_growth_quarterly": np.nan,
+        "earnings_growth_annual": np.nan,
+        "revenue_growth_qoq": np.nan,
+        "revenue_growth_yoy": np.nan,
+        "revenue_growth_annual_yoy": np.nan,
+        "earnings_growth_qoq": np.nan,
+        "earnings_growth_yoy": np.nan,
+        "earnings_growth_annual_yoy": np.nan,
+        "revenue_yoy_acceleration": np.nan,
+        "earnings_yoy_acceleration": np.nan,
+        "revenue_seasonal_qoq_divergence": np.nan,
+        "earnings_seasonal_qoq_divergence": np.nan,
+        "revenue_growth_period": "n/a",
+        "earnings_growth_period": "n/a",
+        "revenue_growth_basis": "n/a",
+        "earnings_growth_basis": "n/a",
+        "revenue_growth_source": "n/a",
+        "earnings_growth_source": "n/a",
+        "data_quality_flag": "missing",
+        "fundamental_data_source": "missing",
+        "_resolved_symbol": symbol,
+    }
+
+def _future_fundamental_defaults() -> dict:
+    return {
+        "current_fundamental_score": np.nan,
+        "current_fundamental_grade": "n/a",
+        "future_fundamental_score": np.nan,
+        "future_fundamental_grade": "n/a",
+        "future_fundamental_direction": "n/a",
+        "future_fundamental_confidence": np.nan,
+        "future_growth_proxy": np.nan,
+        "future_fundamental_momentum_score": np.nan,
+        "future_seasonal_anomaly_score": np.nan,
+        "future_inflection_score": np.nan,
+        "future_cash_flow_proxy": np.nan,
+        "future_balance_quality": np.nan,
+        "future_price_proxy": np.nan,
+        "future_cycle_support": np.nan,
+        "future_macro_score": np.nan,
+        "future_macro_adjusted_score": np.nan,
+        "future_macro_gate_ok": True,
+        "future_macro_gate_reason": "n/a",
+        "expected_revenue_growth_next_q": np.nan,
+        "expected_eps_growth_next_q": np.nan,
+        "expected_margin_next_q": np.nan,
+        "future_moat_reason": "n/a",
+        "future_reliability": np.nan,
+        "future_time_to_top": np.nan,
+        "future_time_to_bottom": np.nan,
+        "future_phase": "Unknown",
+    }
+
+_orig_load_fundamental_snapshot = load_fundamental_snapshot
+
+def load_fundamental_snapshot(symbol: str) -> dict:
+    try:
+        result = _orig_load_fundamental_snapshot(symbol)
+        return result if isinstance(result, dict) else _fundamental_snapshot_defaults(symbol)
+    except Exception:
+        return _fundamental_snapshot_defaults(symbol)
+
+
+_orig_compute_fundamental_grade = compute_fundamental_grade
+
+def compute_fundamental_grade(symbol: str) -> dict:
+    try:
+        result = _orig_compute_fundamental_grade(symbol)
+        return result if isinstance(result, dict) else _fundamental_snapshot_defaults(symbol)
+    except Exception:
+        snap = _fundamental_snapshot_defaults(symbol)
+        snap.update(
+            {
+                "fundamental_score": np.nan,
+                "growth_score": np.nan,
+                "quality_score": np.nan,
+                "health_score": np.nan,
+                "valuation_score": np.nan,
+                "fundamental_grade": "n/a",
+            }
+        )
+        return snap
+
+
+_orig_compute_future_fundamental_grade = compute_future_fundamental_grade
+
+def compute_future_fundamental_grade(symbol: str, price_df: pd.DataFrame | None = None, macro_context: dict | None = None) -> dict:
+    try:
+        result = _orig_compute_future_fundamental_grade(symbol, price_df, macro_context)
+        return result if isinstance(result, dict) else _future_fundamental_defaults()
+    except Exception:
+        return _future_fundamental_defaults()

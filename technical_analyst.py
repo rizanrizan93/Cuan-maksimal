@@ -1858,3 +1858,237 @@ def build_entry_plan(
         empty_plan["plan_reason"] = f"Plan error: {e}"
         return empty_plan
 
+
+
+# =========================================================
+# Safe public wrappers
+# =========================================================
+
+def _safe_cycle_fallback() -> tuple[int, int, bool, dict]:
+    return (
+        20,
+        999,
+        False,
+        {
+            "cycle_reliability": np.nan,
+            "time_to_next_top": np.nan,
+            "phase_age_bars": np.nan,
+            "phase_age_pct": np.nan,
+            "cycle_gate_reason": "cycle_fallback",
+            "dominant_period": 20,
+        },
+    )
+
+_orig_compute_cycle_features = compute_cycle_features
+
+def compute_cycle_features(close_series):
+    """Safe wrapper that suppresses numeric warnings and never raises."""
+    import warnings
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            return _orig_compute_cycle_features(close_series)
+    except Exception:
+        return _safe_cycle_fallback()
+
+
+_orig_classify_8_phase = classify_8_phase
+
+def classify_8_phase(d: pd.DataFrame) -> dict:
+    """Safe wrapper that auto-prepares technical columns when possible."""
+    try:
+        if isinstance(d, pd.DataFrame):
+            required = {"EMA20", "EMA50", "EMA200", "RSI14", "ADX14"}
+            if not required.issubset(set(d.columns)):
+                d = _ensure_technical_columns(d)
+        result = _orig_classify_8_phase(d)
+        if not isinstance(result, dict):
+            return {
+                "phase": "Unknown",
+                "phase_confidence": 0.0,
+                "phase_rank": 0.0,
+                "phase_reason": "Invalid phase result",
+                "phase_scores": {},
+            }
+        return result
+    except Exception as exc:
+        return {
+            "phase": "Unknown",
+            "phase_confidence": 0.0,
+            "phase_rank": 0.0,
+            "phase_reason": f"classify_8_phase_fallback: {type(exc).__name__}",
+            "phase_scores": {},
+        }
+
+
+_orig_build_macro_liquidity_gate = build_macro_liquidity_gate
+
+def build_macro_liquidity_gate(*args, **kwargs):
+    try:
+        return _orig_build_macro_liquidity_gate(*args, **kwargs)
+    except Exception as exc:
+        benchmark_symbol = kwargs.get("benchmark_symbol") if "benchmark_symbol" in kwargs else (args[1] if len(args) > 1 else "")
+        return {
+            "benchmark_symbol": benchmark_symbol,
+            "macro_phase": "Unknown",
+            "macro_phase_confidence": 0.0,
+            "macro_period": np.nan,
+            "macro_time_to_bottom": np.nan,
+            "macro_time_to_top": np.nan,
+            "macro_phase_age_bars": np.nan,
+            "macro_phase_age_pct": np.nan,
+            "macro_cycle_reliability": np.nan,
+            "macro_cycle_gate_reason": f"macro_fallback: {type(exc).__name__}",
+            "macro_score": 50.0,
+            "macro_gate_ok": True,
+            "macro_gate_reason": f"macro_fallback: {type(exc).__name__}",
+            "macro_multiplier": 1.0,
+            "cycle_tuple": _safe_cycle_fallback(),
+            "benchmark_df": pd.DataFrame(),
+            "benchmark_last": None,
+            "benchmark_adx": np.nan,
+            "benchmark_cycle_info": {},
+        }
+
+
+_orig_score_stock_smc = score_stock_smc
+
+def score_stock_smc(*args, **kwargs):
+    try:
+        return _orig_score_stock_smc(*args, **kwargs)
+    except Exception as exc:
+        return {
+            "valid": False,
+            "symbol": kwargs.get("symbol", "n/a"),
+            "decision": "REJECT",
+            "score": 0.0,
+            "core_score": 0.0,
+            "market_structure_score": 0.0,
+            "trend_score": 0.0,
+            "momentum_score": 0.0,
+            "smc_score": 0.0,
+            "reversal_score_pct": 0.0,
+            "risk_score": 100.0,
+            "close": np.nan,
+            "rsi": np.nan,
+            "adx": np.nan,
+            "rel_vol": np.nan,
+            "smart_money_score": 0.0,
+            "cmf20": np.nan,
+            "mfi14": np.nan,
+            "stoch_k": np.nan,
+            "stoch_d": np.nan,
+            "cci20": np.nan,
+            "roc12": np.nan,
+            "dominant_period": np.nan,
+            "time_to_bottom": np.nan,
+            "time_to_top": np.nan,
+            "phase_age_bars": np.nan,
+            "phase_age_pct": np.nan,
+            "cycle_reliability": np.nan,
+            "cycle_gate_reason": f"score_fallback: {type(exc).__name__}",
+            "cycle_info": {},
+            "macro_symbol": "",
+            "macro_phase": "Unknown",
+            "macro_score": 50.0,
+            "macro_gate_ok": True,
+            "macro_gate_reason": f"score_fallback: {type(exc).__name__}",
+            "macro_multiplier": 1.0,
+            "macro_cycle_reliability": np.nan,
+            "macro_time_to_bottom": np.nan,
+            "macro_time_to_top": np.nan,
+            "macro_phase_age_bars": np.nan,
+            "macro_phase_age_pct": np.nan,
+            "future_fundamental_score": np.nan,
+            "future_fundamental_grade": "n/a",
+            "future_fundamental_direction": "n/a",
+            "future_fundamental_confidence": np.nan,
+            "future_fundamental_phase": "Unknown",
+            "future_fundamental_reason": f"score_fallback: {type(exc).__name__}",
+            "phase": "Unknown",
+            "phase_confidence": 0.0,
+            "phase_rank": 0.0,
+            "phase_reason": f"score_fallback: {type(exc).__name__}",
+            "phase_scores": {},
+            "liquidity_ok": False,
+            "trend_ok": False,
+            "unicorn_setup": False,
+            "unicorn_sniper": False,
+            "unicorn_entry_style": "n/a",
+            "fvg_present": False,
+            "fvg_age_bars": np.nan,
+            "fvg_age_days": np.nan,
+            "fvg_status": "n/a",
+            "fvg_fresh": False,
+            "fvg_valid": False,
+            "fvg_mitigated": False,
+            "fvg_top": np.nan,
+            "fvg_bottom": np.nan,
+            "ob_present": False,
+            "unicorn_setup_valid": False,
+            "unicorn_setup_status": "n/a",
+            "unicorn_setup_age_bars": np.nan,
+            "unicorn_setup_age_days": np.nan,
+            "unicorn_setup_fresh": False,
+            "unicorn_sniper_valid": False,
+            "unicorn_sniper_status": "n/a",
+            "unicorn_setup_reason": f"score_fallback: {type(exc).__name__}",
+            "reversal_score": 0.0,
+            "reversal_hits": 0,
+            "obv_trend": "n/a",
+            "obv_slope10": 0.0,
+            "entry_zone_low": np.nan,
+            "entry_zone_high": np.nan,
+            "entry_trigger": np.nan,
+            "entry_price": np.nan,
+            "stop_price": np.nan,
+            "unicorn_setup_confirmed": False,
+            "unicorn_sniper_confirmed": False,
+            "unicorn_fvg_top": np.nan,
+            "unicorn_fvg_bottom": np.nan,
+            "unicorn_breaker_top": np.nan,
+            "unicorn_breaker_bottom": np.nan,
+            "unicorn_sweep_low": np.nan,
+            "notes": f"score_fallback: {type(exc).__name__}",
+            "df": pd.DataFrame(),
+            "last": pd.Series(dtype=float),
+        }
+
+
+_orig_build_entry_plan = build_entry_plan
+
+def build_entry_plan(*args, **kwargs):
+    try:
+        return _orig_build_entry_plan(*args, **kwargs)
+    except Exception as exc:
+        return {
+            "entry_zone_low": np.nan,
+            "entry_zone_high": np.nan,
+            "entry_price_plan": np.nan,
+            "entry_trigger": np.nan,
+            "stop_loss_plan": np.nan,
+            "target_1": np.nan,
+            "target_2": np.nan,
+            "risk_per_share": np.nan,
+            "risk_reward_1": np.nan,
+            "risk_reward_2": np.nan,
+            "upside_to_t1_pct": np.nan,
+            "upside_to_t2_pct": np.nan,
+            "plan_reason": f"entry_plan_fallback: {type(exc).__name__}",
+            "setup_kind": "n/a",
+        }
+
+
+_orig_compute_institutional_forward_score = compute_institutional_forward_score
+
+def compute_institutional_forward_score(*args, **kwargs):
+    try:
+        return _orig_compute_institutional_forward_score(*args, **kwargs)
+    except Exception as exc:
+        return {
+            "ifs_score": np.nan,
+            "ifs_grade": "n/a",
+            "ifs_breakdown": {},
+            "ifs_detail": {"error": f"ifs_fallback: {type(exc).__name__}"},
+        }
