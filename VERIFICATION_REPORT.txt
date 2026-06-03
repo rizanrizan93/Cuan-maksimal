@@ -1,0 +1,6 @@
+Verification summary:
+- app.py: compile OK, news parser import/return fixed
+- technical_analyst.py: runtime bug fixed by normalizing trend/momentum/smc/reversal scores before core_score
+- fundamental_analyst.py: compile OK
+- catalyst_nlp.py: compile OK, IDX/IHSG catalyst refactor included
+- data_engine.py: compile OK
