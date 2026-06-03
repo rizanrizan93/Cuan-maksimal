@@ -1,7 +1,0 @@
-Verification summary
-
-- Syntax check: passed for all Python files.
-- app.py import check: passed under stubbed Streamlit/yfinance environment.
-- fundamental_analyst smoke tests: load_fundamental_snapshot, compute_fundamental_grade, and compute_future_fundamental_grade executed without NameError.
-- technical_analyst smoke test: compute_cycle_features executed without divide-by-zero warning under warnings-as-errors.
-- Deprecated use_container_width usage: removed from app.py.
