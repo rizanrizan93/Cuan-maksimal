@@ -1596,6 +1596,32 @@ def compute_future_fundamental_grade(
     else:
         direction = "Flat"
 
+    growth_quality_factor = _safe_float(snap.get("growth_data_reliability"), 0.5)
+    growth_quality_factor = float(np.clip(growth_quality_factor, 0.0, 1.0))
+
+    proxy_values = [
+        current_block,
+        price_proxy,
+        growth_proxy,
+        fundamental_momentum_score,
+        seasonal_anomaly_score,
+        inflection_score,
+        cash_flow_proxy,
+        balance_quality,
+        cycle_support,
+        expected_revenue_growth_next_q if np.isfinite(expected_revenue_growth_next_q) else np.nan,
+        expected_eps_growth_next_q if np.isfinite(expected_eps_growth_next_q) else np.nan,
+        expected_margin_next_q if np.isfinite(expected_margin_next_q) else np.nan,
+    ]
+    proxy_coverage = float(np.mean([np.isfinite(v) for v in proxy_values])) if proxy_values else 0.0
+    proxy_quality = float(np.clip(
+        (proxy_coverage * 0.55)
+        + (float(np.clip(growth_quality_factor, 0.0, 1.0)) * 0.30)
+        + (0.15 if macro_gate_ok else 0.0),
+        0.0,
+        1.0,
+    ))
+
     confidence_source_count = 1
     if np.isfinite(price_proxy):
         confidence_source_count += 1
@@ -1606,7 +1632,16 @@ def compute_future_fundamental_grade(
 
     growth_quality_factor = _safe_float(snap.get("growth_data_reliability"), 0.5)
     growth_quality_factor = float(np.clip(growth_quality_factor, 0.0, 1.0))
-    confidence = float(np.clip(40 + confidence_source_count * 10 + (growth_quality_factor * 10) + (5 if macro_gate_ok else -8), 0.0, 100.0))
+    confidence = float(np.clip(
+        28
+        + (proxy_coverage * 28)
+        + (confidence_source_count * 6)
+        + (growth_quality_factor * 12)
+        + (6 if macro_gate_ok else -10),
+        0.0,
+        100.0,
+    ))
+    confidence_note = "OK" if proxy_quality >= 0.55 else "Low proxy coverage"
 
     return {
         "current_fundamental_score": current_block,
@@ -1616,6 +1651,9 @@ def compute_future_fundamental_grade(
         "future_fundamental_direction": direction,
         "future_fundamental_confidence": confidence,
         "future_growth_proxy": growth_proxy,
+        "future_proxy_coverage": proxy_coverage,
+        "future_proxy_quality": proxy_quality,
+        "future_confidence_note": confidence_note,
         "future_fundamental_momentum_score": fundamental_momentum_score,
         "future_seasonal_anomaly_score": seasonal_anomaly_score,
         "future_inflection_score": inflection_score,
@@ -1637,6 +1675,7 @@ def compute_future_fundamental_grade(
             f" | marginNQ={format_growth_percent(expected_margin_next_q, 0)}"
             f" | cycle={phase_info.get('phase', 'Unknown') if isinstance(phase_info, dict) else 'Unknown'}"
             f" | inflection={inflection_score:.0f}"
+            f" | coverage={proxy_coverage:.0%}"
         ),
         "future_reliability": cycle_reliability,
         "future_time_to_top": time_to_top,
@@ -1701,6 +1740,9 @@ def _future_fundamental_defaults() -> dict:
         "future_fundamental_direction": "n/a",
         "future_fundamental_confidence": np.nan,
         "future_growth_proxy": np.nan,
+        "future_proxy_coverage": np.nan,
+        "future_proxy_quality": np.nan,
+        "future_confidence_note": "n/a",
         "future_fundamental_momentum_score": np.nan,
         "future_seasonal_anomaly_score": np.nan,
         "future_inflection_score": np.nan,

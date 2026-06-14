@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -296,16 +297,16 @@ PRIMARY_SOURCE_HINTS = (
     "ojk",
     "idx",
     "bei",
+    "bursa efek indonesia",
     "kementerian",
     "kemendag",
     "kemenkeu",
     "esdm",
     "bkpm",
     "bumn",
-    "antara",
 )
 
-DOMESTIC_PRIMARY_SOURCE_HINTS = (
+TRUSTED_SECONDARY_SOURCE_HINTS = (
     "antara",
     "bisnis indonesia",
     "bisnis.com",
@@ -326,6 +327,8 @@ Rules:
 - Reject rumor, speculation, clickbait, and retail sentiment noise.
 - Pass only verifiable, material, structural news.
 - Prefer primary sources: company filings, exchange notices, regulator statements, central bank statements, ministry statements, audited results, or reputable wire reports quoting primary documents.
+- Downweight stale reruns; recent items matter more than old echoes.
+- Distinguish direct ticker relevance from broader sector or macro relevance.
 - Classify macro regime changes, policy actions, sector rotation catalysts, and company-level fundamentals that materially affect earnings, cash flow, valuation, or capital allocation.
 - If the story is mainly about price movement, public excitement, or social chatter, reject it.
 - For Indonesian equities, prioritize Bank Indonesia, OJK, BEI/IDX, Kementerian Keuangan, ESDM, BKPM, BUMN, DPR, and other policy-related institutions.
@@ -348,6 +351,9 @@ class CatalystDecision:
     red_flags: list[str]
     source_quality: str = "unknown"
     materiality: str = "medium"
+    freshness_score: int = 0
+    relevance_score: int = 0
+    source_tier: str = "unknown"
 
     def to_json(self) -> str:
         return json.dumps(self.__dict__, ensure_ascii=False)
@@ -413,15 +419,277 @@ def _source_quality(source: str, text: str) -> str:
     ):
         return "primary"
 
-    if any(_contains_term(src, h) for h in DOMESTIC_PRIMARY_SOURCE_HINTS) or any(
-        _contains_term(text, h) for h in DOMESTIC_PRIMARY_SOURCE_HINTS
+    if any(_contains_term(src, h) for h in TRUSTED_SECONDARY_SOURCE_HINTS) or any(
+        _contains_term(text, h) for h in TRUSTED_SECONDARY_SOURCE_HINTS
     ):
-        return "primary"
+        return "trusted_secondary"
 
     if src:
         return "secondary"
 
     return "unknown"
+
+
+
+def _parse_news_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, (int, float)):
+        try:
+            raw = float(value)
+            if raw > 1_000_000_000_000:
+                raw = raw / 1000.0
+            dt = datetime.fromtimestamp(raw, tz=timezone.utc)
+        except Exception:
+            return None
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+
+        normalized = text.replace("Z", "+00:00")
+        dt = None
+        try:
+            dt = datetime.fromisoformat(normalized)
+        except Exception:
+            pass
+
+        if dt is None:
+            for fmt in (
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d %H:%M",
+                "%Y-%m-%d",
+                "%a, %d %b %Y %H:%M:%S %z",
+                "%a, %d %b %Y %H:%M:%S GMT",
+                "%d %b %Y %H:%M:%S",
+                "%d %b %Y",
+            ):
+                try:
+                    dt = datetime.strptime(text, fmt)
+                    break
+                except Exception:
+                    continue
+
+        if dt is None:
+            return None
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    return dt.astimezone(timezone.utc)
+
+
+def _item_datetime(item: dict) -> datetime | None:
+    for key in (
+        "published_at",
+        "publishedAt",
+        "published",
+        "pubDate",
+        "providerPublishTime",
+        "created_at",
+        "createdAt",
+        "date",
+        "datetime",
+        "timestamp",
+    ):
+        if key in item and item.get(key) not in (None, ""):
+            dt = _parse_news_datetime(item.get(key))
+            if dt is not None:
+                return dt
+    content = item.get("content")
+    if isinstance(content, dict):
+        for key in ("published_at", "publishedAt", "pubDate", "providerPublishTime", "date", "datetime", "timestamp"):
+            if key in content and content.get(key) not in (None, ""):
+                dt = _parse_news_datetime(content.get(key))
+                if dt is not None:
+                    return dt
+    return None
+
+
+def _freshness_bucket(published_at: Any, now: datetime | None = None) -> tuple[int, str, list[str]]:
+    now_dt = now or datetime.now(timezone.utc)
+    dt = _parse_news_datetime(published_at)
+    if dt is None:
+        return 0, "unknown", ["no_timestamp"]
+
+    age_hours = max(0.0, (now_dt - dt).total_seconds() / 3600.0)
+    if age_hours <= 6:
+        return 12, "intraday", ["fresh_news"]
+    if age_hours <= 24:
+        return 10, "fresh", ["fresh_news"]
+    if age_hours <= 72:
+        return 7, "fresh_3d", ["recent_news"]
+    if age_hours <= 168:
+        return 3, "week_old", ["somewhat_old"]
+    if age_hours <= 336:
+        return -4, "stale_2w", ["stale_news"]
+    if age_hours <= 720:
+        return -8, "stale_month", ["very_stale_news"]
+    return -12, "very_stale", ["very_stale_news"]
+
+
+def _extract_related_tickers(item: dict) -> list[str]:
+    collected: list[str] = []
+    for key in ("relatedTickers", "related_tickers", "tickers", "symbols", "ticker"):
+        value = item.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str):
+            collected.append(value)
+        elif isinstance(value, dict):
+            collected.extend([str(v) for v in value.values() if v])
+        elif isinstance(value, Iterable):
+            for v in value:
+                if isinstance(v, dict):
+                    collected.extend([str(x) for x in v.values() if x])
+                elif v is not None:
+                    collected.append(str(v))
+    out: list[str] = []
+    for tick in collected:
+        t = re.sub(r"[^a-z0-9]+", "", str(tick).strip().lower())
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
+def _normalize_signature(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", _normalize_text(text)).strip()
+
+
+def _ticker_relevance(
+    symbol: str,
+    title_text: str,
+    summary_text: str,
+    source_text: str,
+    item: dict | None = None,
+) -> tuple[int, list[str], str]:
+    sym = re.sub(r"[^a-z0-9]+", "", str(symbol or "").strip().lower())
+    if not sym:
+        return 0, [], "unscored"
+
+    text = " ".join([title_text, summary_text, source_text]).strip()
+    reasons: list[str] = []
+    score = 0
+    mode = "unscored"
+
+    related = _extract_related_tickers(item or {}) if item else []
+    if sym in related:
+        score += 12
+        reasons.append("related_ticker_match")
+        mode = "direct"
+    elif related:
+        score -= 4
+        reasons.append("other_ticker_focused")
+        mode = "off_ticker"
+
+    if _contains_term(text, sym):
+        score += 8
+        reasons.append("symbol_mentioned")
+        mode = "direct" if mode != "off_ticker" else mode
+
+    if item:
+        company_name = str(item.get("longName") or item.get("shortName") or item.get("companyName") or "").strip()
+        if company_name:
+            company_norm = _normalize_text(company_name)
+            if company_norm and any(tok in text for tok in company_norm.split() if len(tok) > 3):
+                score += 3
+                reasons.append("company_name_match")
+                if mode == "unscored":
+                    mode = "company"
+        if item.get("link") and sym in _normalize_text(item.get("link")):
+            score += 2
+            reasons.append("link_symbol_match")
+
+    if score == 0:
+        mode = "broad" if not related else mode
+
+    return max(-10, min(20, score)), reasons, mode
+
+
+def _news_duplicate_signature(title: str, summary: str, source: str, link: str = "", published_at: Any = None) -> str:
+    parts = [
+        _normalize_signature(title),
+        _normalize_signature(summary[:180]),
+        _normalize_signature(source),
+        _normalize_signature(link),
+    ]
+    dt = _parse_news_datetime(published_at)
+    if dt is not None:
+        parts.append(dt.strftime("%Y-%m-%d %H"))
+    return " | ".join([p for p in parts if p])
+
+
+def _news_item_payload(item: dict) -> tuple[str, str, str, Any, str]:
+    title = str(
+        item.get("title")
+        or item.get("headline")
+        or item.get("name")
+        or item.get("article_title")
+        or ""
+    )
+    summary = str(
+        item.get("summary")
+        or item.get("description")
+        or item.get("content")
+        or item.get("snippet")
+        or item.get("body")
+        or ""
+    )
+    source = str(
+        item.get("source")
+        or item.get("publisher")
+        or item.get("provider")
+        or item.get("site")
+        or ""
+    )
+    link = str(item.get("link") or item.get("url") or "")
+    published_at = item.get("published_at")
+    if published_at in (None, ""):
+        published_at = item.get("publishedAt") or item.get("published") or item.get("pubDate") or item.get("providerPublishTime")
+    return title, summary, source, published_at, link
+
+
+def _news_has_company_focus(text: str, symbol: str = "") -> bool:
+    if not text:
+        return False
+    company_terms = (
+        "pt ",
+        "tbk",
+        "bk",
+        "perseroan",
+        "emiten",
+        "issuer",
+        "annual report",
+        "quarterly report",
+        "laba",
+        "pendapatan",
+        "revenue",
+        "earnings",
+        "dividen",
+        "buyback",
+        "rights issue",
+        "akuisisi",
+        "merger",
+        "kontrak",
+        "tender",
+        "project",
+        "proyek",
+        "smelter",
+        "pabrik",
+    )
+    if any(term in text for term in company_terms):
+        return True
+    sym = re.sub(r"[^a-z0-9]+", "", str(symbol or "").lower())
+    return bool(sym and _contains_term(text, sym))
+
+
+def _duplicate_penalty(duplicate: bool) -> tuple[int, list[str], list[str]]:
+    if not duplicate:
+        return 0, [], []
+    return -28, ["duplicate_news_item"], ["duplicate"]
 
 
 def _policy_tags(text: str) -> list[str]:
@@ -573,11 +841,21 @@ def _decision_thresholds(score: int, category: str, red_flags: list[str]) -> str
     return "REJECT"
 
 
-def score_news_item(title: str, summary: str = "", source: str = "") -> CatalystDecision:
+def score_news_item(
+    title: str,
+    summary: str = "",
+    source: str = "",
+    published_at: Any = None,
+    symbol: str = "",
+    url: str = "",
+    item: dict | None = None,
+    duplicate: bool = False,
+) -> CatalystDecision:
     title_text = _normalize_text(title)
     summary_text = _normalize_text(summary)
     source_text = _normalize_text(source)
-    text = " ".join([title_text, summary_text, source_text]).strip()
+    url_text = _normalize_text(url)
+    text = " ".join([title_text, summary_text, source_text, url_text]).strip()
 
     reasons: list[str] = []
     red_flags: list[str] = []
@@ -588,7 +866,12 @@ def score_news_item(title: str, summary: str = "", source: str = "") -> Catalyst
     category = "unknown"
     impact_horizon = "days"
     source_quality = _source_quality(source, text)
+    source_tier = source_quality
     materiality = "medium"
+    freshness_score = 0
+    freshness_label = "unknown"
+    relevance_score = 0
+    relevance_mode = "unscored"
 
     if not text:
         return CatalystDecision(
@@ -602,6 +885,9 @@ def score_news_item(title: str, summary: str = "", source: str = "") -> Catalyst
             red_flags=["empty_input"],
             source_quality="unknown",
             materiality="low",
+            freshness_score=0,
+            relevance_score=0,
+            source_tier="unknown",
         )
 
     # Noise / rumor penalty.
@@ -611,6 +897,7 @@ def score_news_item(title: str, summary: str = "", source: str = "") -> Catalyst
         red_flags.append("rumor_or_noise_language")
         category = "noise"
         source_quality = "rumor"
+        source_tier = "rumor"
         materiality = "low"
         reasons.append("negative_language_detected")
         tags.append("noise")
@@ -639,17 +926,59 @@ def score_news_item(title: str, summary: str = "", source: str = "") -> Catalyst
         elif cat == "noise":
             score -= 8
 
-    # Primary source and local authoritative source boost.
+    # Primary / trusted source boost, but keep hierarchy explicit.
     if source_quality == "primary":
         score += 12
         tags.append("primary_source")
+    elif source_quality == "trusted_secondary":
+        score += 6
+        tags.append("trusted_secondary_source")
     elif source_quality == "secondary":
-        score += 4
+        score += 2
 
     # Strong government / regulator references are especially valuable for IDX.
     if _is_indonesia_policy_source(source, text):
         score += 8
         tags.append("id_policy")
+
+    # Freshness matters for catalysts.
+    freshness_score, freshness_label, freshness_notes = _freshness_bucket(published_at)
+    if freshness_score:
+        score += freshness_score
+        tags.append(f"freshness_{freshness_label}")
+        reasons.extend(freshness_notes)
+    else:
+        red_flags.append("no_timestamp")
+
+    # Direct ticker relevance.
+    relevance_score, relevance_reasons, relevance_mode = _ticker_relevance(
+        symbol=symbol,
+        title_text=title_text,
+        summary_text=summary_text,
+        source_text=source_text,
+        item=item,
+    )
+    if relevance_score:
+        score += relevance_score
+        reasons.extend(relevance_reasons)
+        if relevance_mode == "direct":
+            tags.append("direct_ticker_match")
+        elif relevance_mode == "company":
+            tags.append("company_match")
+        elif relevance_mode == "off_ticker":
+            red_flags.append("off_ticker_focus")
+    elif symbol:
+        if _news_has_company_focus(text, symbol=symbol):
+            score -= 3
+            red_flags.append("weak_ticker_link")
+
+    # Duplicate suppression: keep alignment, but downgrade repeats aggressively.
+    dup_penalty, dup_reasons, dup_tags = _duplicate_penalty(duplicate)
+    if dup_penalty:
+        score += dup_penalty
+        red_flags.extend(dup_reasons)
+        tags.extend(dup_tags)
+        reasons.append("duplicate_suppressed")
 
     # Positive wording that usually indicates structural change.
     structural_hits = _count_hits(
@@ -712,6 +1041,13 @@ def score_news_item(title: str, summary: str = "", source: str = "") -> Catalyst
         score += 4
         tags.append("id_institution")
 
+    # A stale catalyst should not get PASS just because it is structurally relevant.
+    if freshness_label in {"stale_month", "very_stale"} and score >= 82:
+        score -= 8
+        red_flags.append("stale_catalyst")
+    if freshness_label in {"stale_month", "very_stale"} and category in {"company_structural", "policy"}:
+        materiality = "medium"
+
     # Ensure tags and reasons are populated.
     if not reasons:
         reasons.append("insufficient_structural_signal")
@@ -728,45 +1064,42 @@ def score_news_item(title: str, summary: str = "", source: str = "") -> Catalyst
         category=category,
         confidence=score,
         impact_horizon=impact_horizon,
-        reasons=reasons[:5],
-        tags=list(dict.fromkeys(tags))[:8],
+        reasons=reasons[:6],
+        tags=list(dict.fromkeys(tags))[:10],
         summary=title.strip()[:180] if title else "No title",
-        red_flags=red_flags[:5],
+        red_flags=red_flags[:6],
         source_quality=source_quality,
         materiality=materiality,
+        freshness_score=int(max(-20, min(20, freshness_score))),
+        relevance_score=int(max(-10, min(20, relevance_score))),
+        source_tier=source_tier,
     )
 
 
-def filter_news_items(items: Iterable[dict]) -> list[CatalystDecision]:
+def filter_news_items(items: Iterable[dict], symbol: str = "") -> list[CatalystDecision]:
     out: list[CatalystDecision] = []
+    seen: set[str] = set()
     for item in items:
         if not isinstance(item, dict):
             continue
 
-        # Support common news item shapes from Yahoo / search / manual input.
-        title = str(
-            item.get("title")
-            or item.get("headline")
-            or item.get("name")
-            or item.get("article_title")
-            or ""
+        title, summary, source, published_at, link = _news_item_payload(item)
+        duplicate_signature = _news_duplicate_signature(title, summary, source, link=link, published_at=published_at)
+        duplicate = duplicate_signature in seen
+        seen.add(duplicate_signature)
+
+        out.append(
+            score_news_item(
+                title=title,
+                summary=summary,
+                source=source,
+                published_at=published_at,
+                symbol=symbol,
+                url=link,
+                item=item,
+                duplicate=duplicate,
+            )
         )
-        summary = str(
-            item.get("summary")
-            or item.get("description")
-            or item.get("content")
-            or item.get("snippet")
-            or item.get("body")
-            or ""
-        )
-        source = str(
-            item.get("source")
-            or item.get("publisher")
-            or item.get("provider")
-            or item.get("site")
-            or ""
-        )
-        out.append(score_news_item(title=title, summary=summary, source=source))
     return out
 
 
@@ -793,6 +1126,9 @@ def parse_catalyst_response(payload: str) -> CatalystDecision:
             red_flags=["parse_error"],
             source_quality="unknown",
             materiality="medium",
+            freshness_score=0,
+            relevance_score=0,
+            source_tier="unknown",
         )
 
     reasons = data.get("reasons", [])
@@ -817,4 +1153,7 @@ def parse_catalyst_response(payload: str) -> CatalystDecision:
         red_flags=[str(x) for x in red_flags],
         source_quality=str(data.get("source_quality", "unknown")),
         materiality=str(data.get("materiality", "medium")),
+        freshness_score=int(data.get("freshness_score", 0) or 0),
+        relevance_score=int(data.get("relevance_score", 0) or 0),
+        source_tier=str(data.get("source_tier", data.get("source_quality", "unknown"))),
     )

@@ -1443,6 +1443,29 @@ def _build_consistent_entry_plan(
         "setup_kind": "None",
         "breakout_confirmed": False,
         "breakout_reference": np.nan,
+        "entry_valid": False,
+        "entry_mode": "None",
+        "tradeability_ok": False,
+        "tradeability_score": np.nan,
+        "tradeability_reason": "n/a",
+        "tradeability_tier": "n/a",
+        "tradeability_gate_reason": "n/a",
+        "setup_lifecycle_stage": "NO_SETUP",
+        "setup_validity_ok": False,
+        "setup_validity_reason": "n/a",
+        "setup_next_action": "WAIT",
+        "setup_age_bars": np.nan,
+        "setup_age_limit": np.nan,
+        "setup_distance_to_entry_pct": np.nan,
+        "setup_rr_1": np.nan,
+        "setup_rr_2": np.nan,
+        "spread_proxy_20d": np.nan,
+        "gap_proxy_20d": np.nan,
+        "avg_value_traded_20d": np.nan,
+        "tradeability_threshold": np.nan,
+        "tradeability_value_floor": np.nan,
+        "tradeability_spread_cap": np.nan,
+        "tradeability_gap_cap": np.nan,
     }
 
     if d is None or last is None or getattr(d, "empty", True):
@@ -1509,11 +1532,19 @@ def _build_consistent_entry_plan(
         unicorn_setup_entry = str(stock_res.get("unicorn_setup_status", "INVALID")).upper() == "ENTRY"
         unicorn_sniper_entry = str(stock_res.get("unicorn_sniper_status", "INVALID")).upper() == "ENTRY"
         decision_buy = decision in {"BUY", "STRONG BUY"}
+        tradeability_gate_ok = bool(stock_res.get("tradeability_gate_ok", True))
+        tradeability_gate_reason = str(stock_res.get("tradeability_gate_reason", "OK"))
 
         if not (decision_buy or breakout_ready or unicorn_setup_entry or unicorn_sniper_entry):
             setup_status = str(stock_res.get("unicorn_setup_status", "No Unicorn entry"))
             sniper_status = str(stock_res.get("unicorn_sniper_status", setup_status))
             empty_plan["plan_reason"] = sniper_status if sniper_status not in {"", "None", "n/a"} else setup_status
+            empty_plan.update(_build_setup_lifecycle_snapshot(stock_res, None, plan_reason=empty_plan["plan_reason"]))
+            return empty_plan
+
+        if not tradeability_gate_ok:
+            empty_plan["plan_reason"] = f"Tradeability gated: {tradeability_gate_reason}"
+            empty_plan.update(_build_setup_lifecycle_snapshot(stock_res, None, plan_reason=empty_plan["plan_reason"]))
             return empty_plan
 
         if breakout_ready:
@@ -1736,6 +1767,7 @@ def _build_consistent_entry_plan(
                 f"{setup_kind}_entry_filtered: "
                 f"rr1={rr1:.2f}, rr2={rr2:.2f}, risk_pct={risk_pct:.2%}, pullback_atr={pullback_atr:.2f}"
             )
+            empty_plan.update(_build_setup_lifecycle_snapshot(stock_res, None, plan_reason=empty_plan["plan_reason"]))
             return empty_plan
 
         return {
@@ -1755,9 +1787,26 @@ def _build_consistent_entry_plan(
             "setup_kind": setup_kind,
             "breakout_confirmed": breakout_confirmed,
             "breakout_reference": breakout_reference,
+            "entry_valid": True,
+            "entry_mode": setup_kind,
+            "tradeability_ok": bool(tradeability_gate_ok),
+            "tradeability_score": float(_safe_float(stock_res.get("tradeability_score"), np.nan)),
+            "tradeability_reason": tradeability_gate_reason,
+            **_build_setup_lifecycle_snapshot(stock_res, {
+                "entry_price_plan": entry_price,
+                "stop_loss_plan": stop_price,
+                "target_1": target_1,
+                "target_2": target_2,
+                "entry_zone_low": entry_zone_low,
+                "entry_zone_high": entry_zone_high,
+                "risk_reward_1": rr1,
+                "risk_reward_2": rr2,
+                "setup_kind": setup_kind,
+            }, plan_reason=plan_reason),
         }
     except Exception as e:
         empty_plan["plan_reason"] = f"Plan error: {e}"
+        empty_plan.update(_build_setup_lifecycle_snapshot(stock_res, None, plan_reason=empty_plan["plan_reason"]))
         return empty_plan
 def score_stock_smc(
     df: pd.DataFrame,
@@ -1993,9 +2042,20 @@ def score_stock_smc(
     ema20_proxy = _safe_float(last.get("EMA20"), np.nan)
     if not np.isfinite(atr_proxy) or atr_proxy <= 0:
         atr_proxy = max(close_proxy * 0.02, 1.0)
+    atr_pct = float(atr_proxy / max(close_proxy, 1e-9))
     swing_low_proxy = float(d["Low"].tail(10).min())
     swing_high_proxy = float(d["High"].tail(20).max())
     support_proxy = ema20_proxy if np.isfinite(ema20_proxy) else swing_low_proxy
+    avg_value_traded_20d = float((d["Close"].tail(20) * d["Volume"].tail(20)).mean())
+    if not np.isfinite(avg_value_traded_20d):
+        avg_value_traded_20d = 0.0
+    gap_proxy_20d = np.nan
+    try:
+        prev_close_20 = d["Close"].shift(1).replace(0, np.nan)
+        gap_proxy_20d = float((d["Open"] / prev_close_20 - 1.0).abs().tail(20).mean())
+    except Exception:
+        gap_proxy_20d = np.nan
+
     entry_proxy_candidates = [
         close_proxy,
         support_proxy,
@@ -2020,10 +2080,23 @@ def score_stock_smc(
     )
     rr1_proxy = max(0.0, (target_1_proxy - entry_proxy) / max(risk_proxy, 1e-9))
     rr2_proxy = max(0.0, (target_2_proxy - entry_proxy) / max(risk_proxy, 1e-9))
-    tradeability_score = float(np.clip(
+    liquidity_value_score = _score_bucket(avg_value_traded_20d, 3.5e8, 5.0e10)
+    volume_participation_score = _score_bucket(float(last.get("REL_VOL", np.nan)), 0.90, 2.60)
+    volatility_stability_score = _score_bucket(atr_pct, 0.012, 0.090, invert=True)
+    gap_stability_score = _score_bucket(gap_proxy_20d if np.isfinite(gap_proxy_20d) else 0.0, 0.008, 0.050, invert=True)
+    rr_tradeability_score = float(np.clip(
         (_score_bucket(rr1_proxy, 0.9, 2.6) * 0.55)
         + (_score_bucket(rr2_proxy, 1.4, 4.8) * 0.30)
         + (_score_bucket(float((close_proxy - support_proxy) / max(atr_proxy, 1e-9)), -0.75, 1.50) * 0.15),
+        0.0,
+        100.0,
+    ))
+    tradeability_score = float(np.clip(
+        (liquidity_value_score * 0.22)
+        + (volume_participation_score * 0.18)
+        + (volatility_stability_score * 0.18)
+        + (gap_stability_score * 0.12)
+        + (rr_tradeability_score * 0.30),
         0.0,
         100.0,
     ))
@@ -2068,7 +2141,43 @@ def score_stock_smc(
                 future_weight = float(np.clip(0.08 + (future_fundamental_confidence / 100.0) * 0.08, 0.08, 0.16))
             final_score = float(np.clip((final_score * (1.0 - future_weight)) + (future_fundamental_score * future_weight), 0.0, 100.0))
 
-    liquidity_ok = (d["Volume"].tail(20).mean() >= min_avg_volume) and (min_price <= float(last["Close"]) <= max_price)
+    tradeability_profile = _tradeability_profile_from_stock_res({"df": d, "last": last, "market_regime": market_regime, "tradeability_score": tradeability_score, "tradeability_components": {"rr_tradeability_score": rr_tradeability_score}, "avg_value_traded_20d": avg_value_traded_20d})
+    avg_value_traded_20d = float(tradeability_profile.get("avg_value_traded_20d", avg_value_traded_20d))
+    spread_proxy_20d = float(tradeability_profile.get("spread_proxy_20d", np.nan))
+    gap_proxy_20d = float(tradeability_profile.get("gap_proxy_20d", np.nan))
+    tradeability_score = float(tradeability_profile.get("tradeability_score", tradeability_score))
+    liquidity_ok = bool(tradeability_profile.get("liquidity_ok", False))
+    tradeability_threshold = float(tradeability_profile.get("tradeability_threshold", 60.0))
+    tradeability_value_floor = float(tradeability_profile.get("tradeability_value_floor", 1.0e9))
+    spread_cap = float(tradeability_profile.get("tradeability_spread_cap", 0.055))
+    gap_cap = float(tradeability_profile.get("tradeability_gap_cap", 0.055))
+    tradeability_gate_ok = bool(
+        liquidity_ok
+        and np.isfinite(tradeability_score)
+        and tradeability_score >= tradeability_threshold
+        and avg_value_traded_20d >= tradeability_value_floor
+        and (not np.isfinite(spread_proxy_20d) or spread_proxy_20d <= spread_cap)
+        and (not np.isfinite(gap_proxy_20d) or gap_proxy_20d <= gap_cap)
+        and (not np.isfinite(atr_pct) or atr_pct <= 0.14)
+    )
+    tradeability_gate_reason_bits = []
+    if not liquidity_ok:
+        tradeability_gate_reason_bits.append("Liquidity below threshold")
+    if np.isfinite(tradeability_score) and tradeability_score < tradeability_threshold:
+        tradeability_gate_reason_bits.append(
+            f"Tradeability score {tradeability_score:.0f} < {tradeability_threshold:.0f}"
+        )
+    if avg_value_traded_20d < tradeability_value_floor:
+        tradeability_gate_reason_bits.append(
+            f"Avg value {avg_value_traded_20d/1e9:.2f}B < {tradeability_value_floor/1e9:.2f}B"
+        )
+    if np.isfinite(spread_proxy_20d) and spread_proxy_20d > spread_cap:
+        tradeability_gate_reason_bits.append(f"Spread proxy {spread_proxy_20d:.1%} > {spread_cap:.1%}")
+    if np.isfinite(gap_proxy_20d) and gap_proxy_20d > gap_cap:
+        tradeability_gate_reason_bits.append(f"Gap proxy {gap_proxy_20d:.1%} > {gap_cap:.1%}")
+    if np.isfinite(atr_pct) and atr_pct > 0.14:
+        tradeability_gate_reason_bits.append(f"ATR% {atr_pct:.1%} too wide")
+    tradeability_gate_reason = "OK" if tradeability_gate_ok else ", ".join(tradeability_gate_reason_bits) if tradeability_gate_reason_bits else "Tradeability gate off"
 
     ema20_v = _safe_float(last.get("EMA20"), np.nan)
     ema50_v = _safe_float(last.get("EMA50"), np.nan)
@@ -2190,18 +2299,21 @@ def score_stock_smc(
     breakout_setup_status = "ENTRY" if breakout_setup_valid else ("WATCHLIST" if breakout_confirmed else "INVALID")
 
     actionable_entry = (
-        unicorn_setup_status == "ENTRY"
-        or unicorn_sniper_status == "ENTRY"
-        or bool(unicorn_state.get("setup_valid", False))
-        or bool(unicorn_state.get("sniper_valid", False))
-        or quality_support_ok
-        or breakout_setup_valid
-        or (smc_confirmed and final_score >= buy_threshold + score_buffer and tradeability_score >= 45)
-        or (market_regime == "BULL" and rs_composite_score >= 58 and market_structure_score >= 56 and smart_money_score >= 52)
+        tradeability_gate_ok
+        and (
+            unicorn_setup_status == "ENTRY"
+            or unicorn_sniper_status == "ENTRY"
+            or bool(unicorn_state.get("setup_valid", False))
+            or bool(unicorn_state.get("sniper_valid", False))
+            or quality_support_ok
+            or breakout_setup_valid
+            or (smc_confirmed and final_score >= buy_threshold + score_buffer and tradeability_score >= 45)
+            or (market_regime == "BULL" and rs_composite_score >= 58 and market_structure_score >= 56 and smart_money_score >= 52)
+        )
     )
 
 
-    if not liquidity_ok:
+    if not liquidity_ok or not tradeability_gate_ok:
         decision = "AVOID"
     elif actionable_entry:
         if score_support_ok and (trend_ok_strict or (trend_ok_soft and macro_support_ok) or quality_support_ok or final_score >= buy_threshold + 2):
@@ -2259,6 +2371,10 @@ def score_stock_smc(
             "decision": decision,
             "score": final_score,
             "trend_ok": trend_ok,
+            "tradeability_gate_ok": tradeability_gate_ok,
+            "tradeability_gate_reason": tradeability_gate_reason,
+            "avg_value_traded_20d": avg_value_traded_20d,
+            "atr_pct": atr_pct,
             "trend_ok_regime": trend_ok_regime,
             "quality_gate_ok": quality_gate_ok,
             "quality_support_ok": quality_support_ok,
@@ -2305,6 +2421,8 @@ def score_stock_smc(
     notes = []
     if not liquidity_ok:
         notes.append("Filter_Likuiditas_Gagal")
+    if not tradeability_gate_ok:
+        notes.append("Tradeability_Gated_" + tradeability_gate_reason.replace(" ", "_"))
     if not trend_ok:
         notes.append("Struktur_Trend_Bearish")
     if unicorn_setup_status != "ENTRY" and unicorn_sniper_status != "ENTRY":
@@ -2340,6 +2458,7 @@ def score_stock_smc(
     risk_score = float(np.clip(
         100.0
         - (18.0 if not liquidity_ok else 0.0)
+        - (18.0 if not tradeability_gate_ok else 0.0)
         - (20.0 if not trend_ok else 0.0)
         - (15.0 if not smc_confirmed else 0.0)
         - (12.0 if not cycle_ok else 0.0)
@@ -2357,6 +2476,20 @@ def score_stock_smc(
         "market_structure_score": float(market_structure_score),
         "rs_composite_score": float(rs_composite_score),
         "tradeability_score": float(tradeability_score),
+        "tradeability_gate_ok": bool(tradeability_gate_ok),
+        "tradeability_gate_reason": tradeability_gate_reason,
+        "tradeability_tier": str(tradeability_profile.get("tradeability_tier", "Watch")),
+        "avg_value_traded_20d": float(avg_value_traded_20d),
+        "spread_proxy_20d": float(spread_proxy_20d) if np.isfinite(spread_proxy_20d) else np.nan,
+        "gap_proxy_20d": float(gap_proxy_20d) if np.isfinite(gap_proxy_20d) else np.nan,
+        "atr_pct": float(atr_pct),
+        "tradeability_components": {
+            "liquidity_value_score": float(liquidity_value_score),
+            "volume_participation_score": float(volume_participation_score),
+            "volatility_stability_score": float(volatility_stability_score),
+            "gap_stability_score": float(gap_stability_score),
+            "rr_tradeability_score": float(rr_tradeability_score),
+        },
         "trend_score": float(trend_score),
         "momentum_score": float(momentum_score),
         "smc_score": float(smc_score),
@@ -2463,6 +2596,232 @@ def score_stock_smc(
     }
 
 
+
+
+def _tradeability_profile_from_stock_res(stock_res: dict) -> dict:
+    """Compute a more conservative tradeability snapshot for IDX execution."""
+    d = stock_res.get("df")
+    last = stock_res.get("last")
+    if not isinstance(d, pd.DataFrame) or d.empty or last is None:
+        return {
+            "avg_value_traded_20d": np.nan,
+            "spread_proxy_20d": np.nan,
+            "gap_proxy_20d": np.nan,
+            "atr_pct": np.nan,
+            "tradeability_score": np.nan,
+            "tradeability_tier": "n/a",
+            "tradeability_gate_ok": False,
+            "tradeability_gate_reason": "Insufficient data",
+            "liquidity_ok": False,
+        }
+
+    close = _safe_float(last.get("Close"), np.nan)
+    atr_v = _safe_float(last.get("ATR14"), np.nan)
+    if not np.isfinite(atr_v) or atr_v <= 0:
+        atr_v = max(close * 0.02, 1.0) if np.isfinite(close) and close > 0 else 1.0
+    atr_pct = float(atr_v / max(close, 1e-9)) if np.isfinite(close) and close > 0 else np.nan
+
+    try:
+        avg_value_traded_20d = _safe_float(stock_res.get("avg_value_traded_20d"), np.nan)
+        if not np.isfinite(avg_value_traded_20d):
+            avg_value_traded_20d = float((d["Close"].tail(20) * d["Volume"].tail(20)).mean())
+    except Exception:
+        avg_value_traded_20d = np.nan
+    if not np.isfinite(avg_value_traded_20d):
+        avg_value_traded_20d = 0.0
+
+    try:
+        spread_proxy_20d = float(((d["High"] - d["Low"]) / d["Close"].replace(0, np.nan)).tail(20).mean())
+    except Exception:
+        spread_proxy_20d = np.nan
+    try:
+        prev_close = d["Close"].shift(1).replace(0, np.nan)
+        gap_proxy_20d = float((d["Open"] / prev_close - 1.0).abs().tail(20).mean())
+    except Exception:
+        gap_proxy_20d = np.nan
+
+    market_regime = str(stock_res.get("market_regime", "SIDEWAYS") or "SIDEWAYS").upper()
+    value_floor = 1.35e9 if market_regime == "BEAR" else (1.05e9 if market_regime == "SIDEWAYS" else 8.0e8)
+    spread_cap = 0.050 if market_regime == "BEAR" else (0.055 if market_regime == "SIDEWAYS" else 0.060)
+    gap_cap = 0.045 if market_regime == "BEAR" else (0.055 if market_regime == "SIDEWAYS" else 0.065)
+    atr_cap = 0.14
+
+    value_score = _score_bucket(avg_value_traded_20d, 4.0e8, 6.0e10)
+    volume_score = _score_bucket(_safe_float(last.get("REL_VOL"), np.nan), 0.90, 2.50)
+    spread_score = _score_bucket(spread_proxy_20d if np.isfinite(spread_proxy_20d) else 0.20, 0.012, spread_cap, invert=True)
+    gap_score = _score_bucket(gap_proxy_20d if np.isfinite(gap_proxy_20d) else 0.20, 0.008, gap_cap, invert=True)
+    atr_score = _score_bucket(atr_pct if np.isfinite(atr_pct) else 0.20, 0.015, atr_cap, invert=True)
+    rr_score = _safe_float(stock_res.get("tradeability_components", {}).get("rr_tradeability_score"), np.nan)
+    if not np.isfinite(rr_score):
+        rr_score = _safe_float(stock_res.get("tradeability_score"), np.nan)
+    if not np.isfinite(rr_score):
+        rr_score = 50.0
+
+    tradeability_score = float(np.clip(
+        (value_score * 0.26)
+        + (volume_score * 0.16)
+        + (spread_score * 0.18)
+        + (gap_score * 0.12)
+        + (atr_score * 0.12)
+        + (rr_score * 0.16),
+        0.0,
+        100.0,
+    ))
+
+    tradeability_threshold = 65.0 if market_regime == "BEAR" else (60.0 if market_regime == "SIDEWAYS" else 56.0)
+    gate_ok = bool(
+        np.isfinite(close)
+        and close >= 100.0
+        and np.isfinite(tradeability_score)
+        and tradeability_score >= tradeability_threshold
+        and avg_value_traded_20d >= value_floor
+        and (not np.isfinite(spread_proxy_20d) or spread_proxy_20d <= spread_cap)
+        and (not np.isfinite(gap_proxy_20d) or gap_proxy_20d <= gap_cap)
+        and (not np.isfinite(atr_pct) or atr_pct <= atr_cap)
+    )
+
+    reason_bits = []
+    if avg_value_traded_20d < value_floor:
+        reason_bits.append(f"Avg value {avg_value_traded_20d/1e9:.2f}B < {value_floor/1e9:.2f}B")
+    if np.isfinite(spread_proxy_20d) and spread_proxy_20d > spread_cap:
+        reason_bits.append(f"Spread proxy {spread_proxy_20d:.1%} > {spread_cap:.1%}")
+    if np.isfinite(gap_proxy_20d) and gap_proxy_20d > gap_cap:
+        reason_bits.append(f"Gap proxy {gap_proxy_20d:.1%} > {gap_cap:.1%}")
+    if np.isfinite(atr_pct) and atr_pct > atr_cap:
+        reason_bits.append(f"ATR% {atr_pct:.1%} too wide")
+    if np.isfinite(tradeability_score) and tradeability_score < tradeability_threshold:
+        reason_bits.append(f"Score {tradeability_score:.0f} < {tradeability_threshold:.0f}")
+    if np.isfinite(close) and close < 100.0:
+        reason_bits.append("Price below minimum live threshold")
+
+    if tradeability_score >= 82:
+        tier = "Institutional"
+    elif tradeability_score >= 70:
+        tier = "Good"
+    elif tradeability_score >= 60:
+        tier = "Watch"
+    else:
+        tier = "Avoid"
+
+    return {
+        "avg_value_traded_20d": float(avg_value_traded_20d),
+        "spread_proxy_20d": float(spread_proxy_20d) if np.isfinite(spread_proxy_20d) else np.nan,
+        "gap_proxy_20d": float(gap_proxy_20d) if np.isfinite(gap_proxy_20d) else np.nan,
+        "atr_pct": float(atr_pct) if np.isfinite(atr_pct) else np.nan,
+        "tradeability_score": float(tradeability_score),
+        "tradeability_tier": tier,
+        "tradeability_gate_ok": gate_ok,
+        "tradeability_gate_reason": "OK" if gate_ok else (", ".join(reason_bits) if reason_bits else "Tradeability gate off"),
+        "liquidity_ok": bool(np.isfinite(close) and close >= 100.0 and avg_value_traded_20d >= value_floor),
+        "tradeability_threshold": float(tradeability_threshold),
+        "tradeability_value_floor": float(value_floor),
+        "tradeability_spread_cap": float(spread_cap),
+        "tradeability_gap_cap": float(gap_cap),
+    }
+
+
+def _build_setup_lifecycle_snapshot(stock_res: dict, entry_plan: dict | None = None, *, plan_reason: str = "") -> dict:
+    """Summarize whether a setup is still valid and what to do next."""
+    d = stock_res.get("df")
+    last = stock_res.get("last")
+    close = _safe_float(last.get("Close"), np.nan) if last is not None else np.nan
+    entry_plan = entry_plan or {}
+
+    entry_price = _safe_float(entry_plan.get("entry_price_plan"), np.nan)
+    stop_price = _safe_float(entry_plan.get("stop_loss_plan"), np.nan)
+    target_1 = _safe_float(entry_plan.get("target_1"), np.nan)
+    target_2 = _safe_float(entry_plan.get("target_2"), np.nan)
+    entry_zone_low = _safe_float(entry_plan.get("entry_zone_low"), np.nan)
+    entry_zone_high = _safe_float(entry_plan.get("entry_zone_high"), np.nan)
+    rr1 = _safe_float(entry_plan.get("risk_reward_1"), np.nan)
+    rr2 = _safe_float(entry_plan.get("risk_reward_2"), np.nan)
+    setup_kind = str(entry_plan.get("setup_kind") or stock_res.get("setup_kind") or "None")
+    tradeability_ok = bool(stock_res.get("tradeability_gate_ok", False))
+    tradeability_reason = str(stock_res.get("tradeability_gate_reason", "n/a"))
+    decision = str(stock_res.get("decision", "AVOID") or "AVOID").upper()
+
+    ages = []
+    for key in ("unicorn_setup_age_bars", "unicorn_sniper_age_bars", "fvg_age_bars"):
+        val = _safe_float(stock_res.get(key), np.nan)
+        if np.isfinite(val) and val >= 0:
+            ages.append(float(val))
+    age_bars = min(ages) if ages else np.nan
+    age_limit = {
+        "BREAKOUT": 18,
+        "SNIPER": 14,
+        "BASIC": 16,
+        "SCOREBASED": 12,
+    }.get(setup_kind.upper(), 18)
+
+    stage = "NO_SETUP"
+    validity_ok = False
+    next_action = "WAIT"
+    reasons: list[str] = []
+
+    if not tradeability_ok:
+        stage = "NOT_TRADEABLE"
+        next_action = "SKIP"
+        reasons.append(tradeability_reason)
+    elif not np.isfinite(entry_price) or entry_price <= 0:
+        stage = "NO_ENTRY"
+        next_action = "WAIT"
+        reasons.append("No actionable entry")
+    else:
+        if np.isfinite(age_bars) and age_bars > age_limit:
+            stage = "EXPIRED"
+            next_action = "REMOVE"
+            reasons.append(f"Age {age_bars:.0f} > {age_limit}")
+        elif np.isfinite(stop_price) and np.isfinite(close) and close <= stop_price:
+            stage = "INVALIDATED"
+            next_action = "CUT / DROP"
+            reasons.append(f"Close {close:.0f} <= stop {stop_price:.0f}")
+        elif np.isfinite(target_2) and np.isfinite(close) and close >= target_2:
+            stage = "TARGET_2_HIT"
+            next_action = "TAKE PROFIT / TRAIL"
+            validity_ok = True
+            reasons.append("Target 2 reached")
+        elif np.isfinite(target_1) and np.isfinite(close) and close >= target_1:
+            stage = "TARGET_1_HIT"
+            next_action = "TRAIL / HOLD"
+            validity_ok = True
+            reasons.append("Target 1 reached")
+        elif np.isfinite(entry_zone_low) and np.isfinite(entry_zone_high) and np.isfinite(close) and entry_zone_low <= close <= entry_zone_high:
+            stage = "ENTRY_ZONE"
+            next_action = "PREPARE LIMIT ORDER"
+            validity_ok = True
+            reasons.append("Price is inside entry zone")
+        elif np.isfinite(entry_price) and np.isfinite(close) and close >= entry_price:
+            stage = "ENTRY_TRIGGERED"
+            next_action = "MANAGE RISK"
+            validity_ok = True
+            reasons.append("Entry has triggered or been exceeded")
+        else:
+            stage = "WATCHLIST"
+            next_action = "WAIT"
+            validity_ok = True
+            reasons.append("Setup still waiting")
+
+    if decision not in {"BUY", "STRONG BUY", "WATCHLIST"} and stage == "WATCHLIST":
+        reasons.append(f"Decision={decision}")
+
+    if not validity_ok and stage not in {"INVALIDATED", "EXPIRED", "NOT_TRADEABLE"}:
+        validity_ok = False
+
+    distance_to_entry_pct = np.nan
+    if np.isfinite(close) and close > 0 and np.isfinite(entry_price):
+        distance_to_entry_pct = float(((entry_price - close) / close) * 100.0)
+
+    return {
+        "setup_lifecycle_stage": stage,
+        "setup_validity_ok": bool(validity_ok),
+        "setup_validity_reason": "; ".join([r for r in reasons if r]) if reasons else plan_reason or "n/a",
+        "setup_next_action": next_action,
+        "setup_age_bars": float(age_bars) if np.isfinite(age_bars) else np.nan,
+        "setup_age_limit": float(age_limit),
+        "setup_distance_to_entry_pct": distance_to_entry_pct,
+        "setup_rr_1": float(rr1) if np.isfinite(rr1) else np.nan,
+        "setup_rr_2": float(rr2) if np.isfinite(rr2) else np.nan,
+    }
 
 def _entry_price_from_zone(entry_zone_low: float, entry_zone_high: float, bias: float = 0.22) -> float:
     """Pick a conservative limit-entry price inside a setup zone.

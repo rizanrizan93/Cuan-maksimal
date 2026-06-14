@@ -1,8 +1,10 @@
 import concurrent.futures as cf
+import os
 import json
 import re
 import tempfile
 import time
+import datetime as dt
 from pathlib import Path
 
 import numpy as np
@@ -19,12 +21,54 @@ from scipy.signal import argrelextrema, hilbert, periodogram
 # Tab 2: Institutional Forward Score with sub-tabs + entry plan / benchmark / time analysis
 # =========================================================
 
-st.set_page_config(page_title="IDX Dual Tab Scanner", layout="wide")
+st.set_page_config(page_title="IDX Dual Tab Scanner", layout="wide", initial_sidebar_state="collapsed")
 st.title("📊 IDX Dual Tab Scanner")
 st.caption(
     "Global watchlist untuk ranking cepat, lalu deep dive untuk bedah detail per ticker dengan institutional forward score, entry plan, dan time analysis."
 )
 st.markdown("---")
+
+st.markdown(
+    """
+    <style>
+    @media (max-width: 768px) {
+        .block-container {
+            padding-top: 0.8rem;
+            padding-left: 0.7rem;
+            padding-right: 0.7rem;
+        }
+        div[data-testid="stHorizontalBlock"] {
+            gap: 0.5rem;
+        }
+        .stTabs [data-baseweb="tab"] {
+            font-size: 0.9rem;
+            padding-left: 0.75rem;
+            padding-right: 0.75rem;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# Prefer remote ledger storage when secrets are present.
+def _bootstrap_portfolio_db_url() -> None:
+    try:
+        if os.environ.get("PORTFOLIO_DB_URL", "").strip():
+            return
+        for key in ("PORTFOLIO_DB_URL", "SUPABASE_DB_URL", "DATABASE_URL"):
+            try:
+                secret_value = st.secrets.get(key, "")
+            except Exception:
+                secret_value = ""
+            if secret_value:
+                os.environ["PORTFOLIO_DB_URL"] = str(secret_value).strip()
+                break
+    except Exception:
+        pass
+
+
+_bootstrap_portfolio_db_url()
 
 # =========================================================
 # Sidebar
@@ -56,6 +100,9 @@ min_price = st.sidebar.number_input("Min harga (Rp)", value=200.0, step=10.0)
 max_price = st.sidebar.number_input("Max harga (Rp)", value=25000.0, step=500.0)
 min_avg_volume = st.sidebar.number_input("Min rata-rata volume 20D", value=150000, step=50000)
 min_history_bars = st.sidebar.slider("Min candle valid", 60, 240, 100)
+scan_limit = st.sidebar.slider("Maks tickers per scan", 20, 500, 200, step=10)
+mobile_mode = st.sidebar.checkbox("HP Compact Mode", value=True)
+
 
 st.sidebar.markdown("---")
 st.sidebar.header("🚀 Execution")
@@ -77,6 +124,7 @@ from catalyst_nlp import *
 from idx_edge_lab import StrategyParams, summarize_walk_forward, walk_forward_test
 from research_io import read_uploaded_ohlcv_bundle, read_uploaded_research_bundle, save_research_bundle
 from ohlcv_downloader import download_batch_idx_ohlcv, extract_universe_tickers, load_universe_from_csv, save_batch_bundle
+import portfolio_engine as pe
 
 
 def _safe_text(value) -> str:
@@ -85,6 +133,79 @@ def _safe_text(value) -> str:
         return text
     except Exception:
         return ""
+
+
+def _build_stockbit_ticket(row: dict | pd.Series) -> str:
+    """Create a concise manual-execution ticket for Stockbit mobile use."""
+    try:
+        if isinstance(row, pd.Series):
+            row = row.to_dict()
+        row = row or {}
+        ticker = _safe_text(row.get("Ticker") or row.get("symbol") or "n/a")
+        decision = _safe_text(row.get("Decision") or "n/a")
+        setup = _safe_text(row.get("Lifecycle") or row.get("BreakoutStatus") or row.get("Setup") or "n/a")
+        validity = _safe_text(row.get("Validity") or "n/a")
+        trade_gate = _safe_text(row.get("TradeGate") or "n/a")
+        next_action = _safe_text(row.get("NextAction") or "WAIT")
+        score = row.get("Score", np.nan)
+        ifs = row.get("IFS", np.nan)
+        tradeability = row.get("Tradeability", np.nan)
+        entry = row.get("Entry", np.nan)
+        stop = row.get("Stop", np.nan)
+        tp1 = row.get("TP1", np.nan)
+        tp2 = row.get("TP2", np.nan)
+        rr1 = row.get("RR1", np.nan)
+        rr2 = row.get("RR2", np.nan)
+        reason = _safe_text(row.get("ValidityReason") or row.get("TradeGateReason") or "")
+        notes = _safe_text(row.get("Notes") or "")
+        value20d = row.get("Value20D_Bn", np.nan)
+        spread = row.get("SpreadPct", np.nan)
+        gap = row.get("GapPct", np.nan)
+        parts = [
+            f"STOCKBIT TRADE TICKET - {ticker}",
+            f"Decision      : {decision}",
+            f"Setup         : {setup}",
+            f"Validity      : {validity}",
+            f"Trade Gate    : {trade_gate}",
+            f"Next Action   : {next_action}",
+            f"Score / IFS   : {score:.2f} / {ifs:.2f}" if pd.notna(score) and pd.notna(ifs) else f"Score / IFS   : n/a",
+            f"Tradeability  : {tradeability:.2f}" if pd.notna(tradeability) else "Tradeability  : n/a",
+            f"Value 20D     : Rp {value20d:.2f}B" if pd.notna(value20d) else "Value 20D     : n/a",
+            f"Spread / Gap  : {spread:.2f}% / {gap:.2f}%" if pd.notna(spread) and pd.notna(gap) else "Spread / Gap  : n/a",
+            f"Entry         : Rp {entry:,.0f}" if pd.notna(entry) else "Entry         : n/a",
+            f"Stop          : Rp {stop:,.0f}" if pd.notna(stop) else "Stop          : n/a",
+            f"TP1 / TP2     : Rp {tp1:,.0f} / Rp {tp2:,.0f}" if pd.notna(tp1) and pd.notna(tp2) else "TP1 / TP2     : n/a",
+            f"RR1 / RR2     : {rr1:.2f} / {rr2:.2f}" if pd.notna(rr1) and pd.notna(rr2) else "RR1 / RR2     : n/a",
+        ]
+        if reason:
+            parts.append(f"Reason        : {reason}")
+        if notes:
+            parts.append(f"Notes         : {notes}")
+        parts.append("")
+        parts.append("Checklist:")
+        parts.append("- Cek ulang harga terakhir di Stockbit sebelum entry.")
+        parts.append("- Entry hanya jika setup masih valid dan trade gate OK.")
+        parts.append("- Batalkan jika harga sudah tembus stop / setup expired.")
+        return "\n".join(parts)
+    except Exception as exc:
+        return f"STOCKBIT TRADE TICKET - ERROR\n{type(exc).__name__}: {exc}"
+
+
+def _build_setup_summary(row: dict | pd.Series) -> str:
+    if isinstance(row, pd.Series):
+        row = row.to_dict()
+    row = row or {}
+    parts = [
+        f"**Market Struct:** `{row.get('MarketStruct', 'n/a')}`  \n",
+        f"**Trend/Momentum:** `{row.get('Trend', 'n/a')}` / `{row.get('Momentum', 'n/a')}`  \n",
+        f"**Cycle:** `{row.get('Cycle', 'n/a')}` bars | Rel `{row.get('CycleRel', 'n/a')}`  \n",
+        f"**Risk:** `{row.get('Risk', 'n/a')}`  \n",
+        f"**TP1/TP2:** `{row.get('TP1', 'n/a')}` / `{row.get('TP2', 'n/a')}`  \n",
+        f"**RR1/RR2:** `{row.get('RR1', 'n/a')}` / `{row.get('RR2', 'n/a')}`  \n",
+        f"**Smart Money:** `{row.get('SmartMoney', 'n/a')}`  \n",
+        f"**Phase:** `{row.get('Phase', 'n/a')}`",
+    ]
+    return "".join(parts)
 
 APP_TMP_DIR = Path(tempfile.gettempdir())
 DECISION_CACHE_PATH = APP_TMP_DIR / "scanner_decision_cache.json"
@@ -738,6 +859,66 @@ def _recalibrate_global_scan_results(valid_results: list[dict]) -> list[dict]:
     if not valid_results:
         return valid_results
 
+
+def _save_trade_journal_from_scan(results: list[dict], account_id: str = "default") -> int:
+    """Persist the latest scan results into the trade journal ledger."""
+    if not results:
+        return 0
+    saved = 0
+    scan_date = dt.datetime.utcnow().date().isoformat()
+    for r in results:
+        if not isinstance(r, dict) or not r.get("symbol"):
+            continue
+        entry_plan = r.get("entry_plan", {}) if isinstance(r.get("entry_plan", {}), dict) else {}
+        lifecycle_json = {
+            "decision": r.get("decision"),
+            "score": r.get("score"),
+            "ifs_score": r.get("ifs_score"),
+            "tradeability_score": r.get("tradeability_score"),
+            "setup_lifecycle_stage": r.get("setup_lifecycle_stage"),
+            "setup_validity_ok": r.get("setup_validity_ok"),
+            "setup_validity_reason": r.get("setup_validity_reason"),
+            "setup_next_action": r.get("setup_next_action"),
+            "entry_plan": {
+                "entry_price": entry_plan.get("entry_price_plan", r.get("entry_price_plan")),
+                "stop_price": entry_plan.get("stop_loss_plan", r.get("stop_loss_plan")),
+                "target_1": entry_plan.get("target_1", r.get("target_1")),
+                "target_2": entry_plan.get("target_2", r.get("target_2")),
+            },
+        }
+        try:
+            pe.upsert_trade_journal(
+                symbol=str(r.get("symbol")),
+                scan_date=scan_date,
+                setup_stage=str(r.get("setup_lifecycle_stage") or r.get("setup_kind") or "UNKNOWN"),
+                validity_ok=bool(r.get("setup_validity_ok", False)),
+                validity_reason=str(r.get("setup_validity_reason", r.get("tradeability_gate_reason", "n/a"))),
+                next_action=str(r.get("setup_next_action", "WAIT")),
+                decision=str(r.get("decision", "AVOID")),
+                setup_kind=str(r.get("setup_kind", "")),
+                score=float(r.get("score", np.nan)) if pd.notna(r.get("score", np.nan)) else None,
+                ifs_score=float(r.get("ifs_score", np.nan)) if pd.notna(r.get("ifs_score", np.nan)) else None,
+                catalyst_score=float(r.get("catalyst_score", np.nan)) if pd.notna(r.get("catalyst_score", np.nan)) else None,
+                tradeability_score=float(r.get("tradeability_score", np.nan)) if pd.notna(r.get("tradeability_score", np.nan)) else None,
+                entry_price=float(entry_plan.get("entry_price_plan", r.get("entry_price_plan", np.nan))) if pd.notna(entry_plan.get("entry_price_plan", r.get("entry_price_plan", np.nan))) else None,
+                stop_price=float(entry_plan.get("stop_loss_plan", r.get("stop_loss_plan", np.nan))) if pd.notna(entry_plan.get("stop_loss_plan", r.get("stop_loss_plan", np.nan))) else None,
+                target_1=float(entry_plan.get("target_1", r.get("target_1", np.nan))) if pd.notna(entry_plan.get("target_1", r.get("target_1", np.nan))) else None,
+                target_2=float(entry_plan.get("target_2", r.get("target_2", np.nan))) if pd.notna(entry_plan.get("target_2", r.get("target_2", np.nan))) else None,
+                risk_reward_1=float(r.get("setup_rr_1", r.get("risk_reward_1", np.nan))) if pd.notna(r.get("setup_rr_1", r.get("risk_reward_1", np.nan))) else None,
+                risk_reward_2=float(r.get("setup_rr_2", r.get("risk_reward_2", np.nan))) if pd.notna(r.get("setup_rr_2", r.get("risk_reward_2", np.nan))) else None,
+                value_traded_20d=float(r.get("avg_value_traded_20d", np.nan)) if pd.notna(r.get("avg_value_traded_20d", np.nan)) else None,
+                spread_proxy_20d=float(r.get("spread_proxy_20d", np.nan)) if pd.notna(r.get("spread_proxy_20d", np.nan)) else None,
+                gap_proxy_20d=float(r.get("gap_proxy_20d", np.nan)) if pd.notna(r.get("gap_proxy_20d", np.nan)) else None,
+                notes=str(r.get("notes", "")),
+                lifecycle_json=lifecycle_json,
+                account_id=account_id,
+                source="scanner_scan",
+            )
+            saved += 1
+        except Exception:
+            continue
+    return saved
+
     try:
         base_df = pd.DataFrame(
             {
@@ -785,6 +966,17 @@ elif universe_mode == "Upload CSV":
 else:
     local_file = Path("midcap_universe.csv")
     universe = load_universe_from_csv(local_file) if local_file.exists() else []
+
+# Keep the scan practical on mobile: dedupe and cap the active universe.
+seen_universe = set()
+_clean_universe = []
+for sym in universe:
+    sym = str(sym or "").strip().upper()
+    if not sym or sym in seen_universe:
+        continue
+    seen_universe.add(sym)
+    _clean_universe.append(sym)
+universe = _clean_universe[: int(scan_limit)] if scan_limit else _clean_universe
 
 if "global_scan_results" not in st.session_state:
     st.session_state.global_scan_results = []
@@ -1049,11 +1241,11 @@ def run_deep_dive_analysis(
 # =========================================================
 # Tabs
 # =========================================================
-tab1, tab2, tab3, tab4 = st.tabs(["📈 Market Structure", "🏦 Institutional Forward Score", "🧪 Walk-Forward Lab", "⬇️ OHLCV Downloader"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Market Structure", "🏦 Institutional Forward Score", "🧪 Walk-Forward Lab", "⬇️ OHLCV Downloader", "💼 Live Portfolio"])
 
 with tab1:
-    st.subheader("Market Structure Top 20")
-    st.caption("Fokus pada trend, momentum, cycle, risk, dan setup teknikal yang paling kuat.")
+    st.subheader("Market Structure + Tradeability Top 20")
+    st.caption("Fokus pada trend, momentum, cycle, risk, dan apakah setup cukup tradeable untuk uang real.")
 
     if run_global_scan:
         if not universe:
@@ -1136,12 +1328,23 @@ with tab1:
                             "MacroGate": "ON" if r.get("macro_gate_ok", True) else "OFF",
                             "IFS": round(r.get("ifs_score", np.nan), 2) if pd.notna(r.get("ifs_score", np.nan)) else np.nan,
                             "IFSGrade": r.get("ifs_grade", "n/a"),
+                            "Tradeability": round(r.get("tradeability_score", np.nan), 2) if pd.notna(r.get("tradeability_score", np.nan)) else np.nan,
+                            "TradeTier": r.get("tradeability_tier", "n/a"),
+                            "TradeGate": "OK" if r.get("tradeability_gate_ok", False) else "BLOCK",
+                            "TradeGateReason": r.get("tradeability_gate_reason", "-"),
+                            "Lifecycle": r.get("setup_lifecycle_stage", "NO_SETUP"),
+                            "Validity": "YES" if r.get("setup_validity_ok", False) else "NO",
+                            "NextAction": r.get("setup_next_action", "WAIT"),
+                            "ValidityReason": str(r.get("setup_validity_reason", r.get("tradeability_gate_reason", "n/a"))),
+                            "Value20D_Bn": round(_safe_float(r.get("avg_value_traded_20d"), np.nan) / 1e9, 2) if pd.notna(r.get("avg_value_traded_20d", np.nan)) else np.nan,
                             "Entry": round(r.get("entry_price_plan", r.get("entry_price", np.nan)), 2) if pd.notna(r.get("entry_price_plan", r.get("entry_price", np.nan))) else np.nan,
                             "Stop": round(r.get("stop_loss_plan", r.get("stop_price", np.nan)), 2) if pd.notna(r.get("stop_loss_plan", r.get("stop_price", np.nan))) else np.nan,
                             "TP1": round(r.get("target_1", np.nan), 2) if pd.notna(r.get("target_1", np.nan)) else np.nan,
                             "TP2": round(r.get("target_2", np.nan), 2) if pd.notna(r.get("target_2", np.nan)) else np.nan,
                             "RR1": round(r.get("risk_reward_1", np.nan), 2) if pd.notna(r.get("risk_reward_1", np.nan)) else np.nan,
                             "RR2": round(r.get("risk_reward_2", np.nan), 2) if pd.notna(r.get("risk_reward_2", np.nan)) else np.nan,
+                            "SpreadPct": round(r.get("spread_proxy_20d", np.nan) * 100.0, 2) if pd.notna(r.get("spread_proxy_20d", np.nan)) else np.nan,
+                            "GapPct": round(r.get("gap_proxy_20d", np.nan) * 100.0, 2) if pd.notna(r.get("gap_proxy_20d", np.nan)) else np.nan,
                             "Notes": r["notes"],
                         }
                     )
@@ -1173,29 +1376,63 @@ with tab1:
 
                 priority_df = _build_watch_df(watch_rows, ascending=False)
                 top20_priority = priority_df.head(20).copy()
+                journal_col1, journal_col2 = st.columns([1, 2])
+                with journal_col1:
+                    if st.button("Save current scan to journal", type="secondary"):
+                        saved = _save_trade_journal_from_scan(st.session_state.get("global_valid_results", []), account_id="default")
+                        st.success(f"{saved} snapshot jurnal tersimpan.")
+                with journal_col2:
+                    st.caption("Trade journal menyimpan lifecycle, validity, tradeability, entry, stop, dan target untuk review manual Stockbit.")
                 st.subheader("🔥 Top 3 High-Conviction Setups")
-                top3 = priority_df[priority_df["Decision"].isin(["BUY", "STRONG BUY"])].head(3)
+                top3 = priority_df[
+                    priority_df["Decision"].isin(["BUY", "STRONG BUY"])
+                    & (priority_df.get("TradeGate", "OK") == "OK")
+                    & (priority_df.get("Validity", "NO") == "YES")
+                ].head(3)
                 if not top3.empty:
-                    cols = st.columns(len(top3))
-                    for idx, row in enumerate(top3.itertuples()):
-                        with cols[idx]:
-                            st.metric(
-                                label=f"🌟 {row.Ticker} ({row.Decision})",
-                                value=f"Rp {row.Entry:,.0f}" if pd.notna(row.Entry) else f"Rp {row.Stop:,.0f}",
-                                delta=f"IFS: {row.IFS}",
-                            )
-                            st.markdown(
-                                f"**Market Struct:** `{row.MarketStruct}`  \n"
-                                f"**Trend/Momentum:** `{row.Trend}` / `{row.Momentum}`  \n"
-                                f"**Cycle:** `{row.Cycle}` bars | Rel `{row.CycleRel}`  \n"
-                                f"**Risk:** `{row.Risk}`  \n"
-                                f"**TP1/TP2:** `{row.TP1}` / `{row.TP2}`  \n"
-                                f"**RR1/RR2:** `{row.RR1}` / `{row.RR2}`  \n"
-                                f"**Smart Money:** `{row.SmartMoney}`  \n"
-                                f"**Phase:** `{row.Phase}`"
-                            )
+                    if mobile_mode or len(top3) == 1:
+                        for row in top3.itertuples():
+                            with st.container():
+                                st.metric(
+                                    label=f"🌟 {row.Ticker} ({row.Decision})",
+                                    value=f"Rp {row.Entry:,.0f}" if pd.notna(row.Entry) else f"Rp {row.Stop:,.0f}",
+                                    delta=f"IFS: {row.IFS}",
+                                )
+                                st.markdown(_build_setup_summary(row))
+                                st.markdown("---")
+                    else:
+                        cols = st.columns(len(top3))
+                        for idx, row in enumerate(top3.itertuples()):
+                            with cols[idx]:
+                                st.metric(
+                                    label=f"🌟 {row.Ticker} ({row.Decision})",
+                                    value=f"Rp {row.Entry:,.0f}" if pd.notna(row.Entry) else f"Rp {row.Stop:,.0f}",
+                                    delta=f"IFS: {row.IFS}",
+                                )
+                                st.markdown(_build_setup_summary(row))
                 else:
-                    st.info("Belum ada kandidat BUY/STRONG BUY pada universe saat ini.")
+                    st.info("Belum ada kandidat BUY/STRONG BUY yang lolos tradeability gate pada universe saat ini.")
+
+                actionable_df = priority_df[
+                    priority_df["Decision"].isin(["BUY", "STRONG BUY"])
+                    & (priority_df.get("TradeGate", "OK") == "OK")
+                    & (priority_df.get("Validity", "NO") == "YES")
+                ].copy()
+                if not actionable_df.empty:
+                    st.markdown("---")
+                    st.subheader("📱 HP Trade Ticket")
+                    st.caption("Pilih setup lalu salin ticket ini ke Stockbit notes / checklist manual Anda sebelum entry.")
+                    ticket_options = actionable_df["Ticker"].astype(str).tolist()
+                    selected_setup = st.selectbox("Pilih ticker", ticket_options, key="hp_stockbit_ticket_picker")
+                    ticket_row = actionable_df[actionable_df["Ticker"].astype(str) == str(selected_setup)].iloc[0]
+                    ticket_text = _build_stockbit_ticket(ticket_row)
+                    st.text_area("Stockbit ticket", value=ticket_text, height=280, key="hp_stockbit_ticket_text")
+                    st.download_button(
+                        "Download ticket .txt",
+                        data=ticket_text.encode("utf-8"),
+                        file_name=f"{selected_setup}_stockbit_ticket.txt",
+                        mime="text/plain",
+                    )
 
                 st.markdown("---")
                 st.subheader("🏆 Market Structure Ranking (Top 20)")
@@ -1214,6 +1451,22 @@ with tab1:
                     st.info("Tidak ada kandidat Breakout pada universe ini.")
                 else:
                     st.dataframe(breakout_view.head(20), width="stretch", hide_index=True)
+
+                journal_col1, journal_col2 = st.columns([1, 2])
+                with journal_col1:
+                    if st.button("Save current scan to journal", type="secondary"):
+                        saved = _save_trade_journal_from_scan(st.session_state.get("global_valid_results", []), account_id="default")
+                        st.success(f"{saved} snapshot jurnal tersimpan.")
+                with journal_col2:
+                    st.caption("Trade journal menyimpan lifecycle, validity, tradeability, entry, stop, dan target untuk review manual Stockbit.")
+
+                st.markdown("---")
+                st.subheader("🧾 Trade Journal Snapshot")
+                journal_df = pe.list_trade_journal(limit=25)
+                if journal_df.empty:
+                    st.info("Belum ada trade journal tersimpan. Klik tombol save untuk menyalin scan ini ke ledger.")
+                else:
+                    st.dataframe(journal_df.head(10), width="stretch", hide_index=True)
     else:
         if not st.session_state.global_watch_df_raw.empty:
             watch_df = _build_watch_df(st.session_state.global_watch_df_raw.to_dict("records"), ascending=(ranking_sort_mode == "Ascending"))
@@ -1242,13 +1495,20 @@ with tab1:
                 st.info("Tidak ada kandidat Breakout pada universe ini.")
             else:
                 st.dataframe(breakout_view.head(20), width="stretch", hide_index=True)
+            st.markdown("---")
+            st.subheader("🧾 Trade Journal Snapshot")
+            journal_df = pe.list_trade_journal(limit=25)
+            if journal_df.empty:
+                st.info("Belum ada trade journal tersimpan.")
+            else:
+                st.dataframe(journal_df.head(10), width="stretch", hide_index=True)
             st.info("Klik **Run global scan** di sidebar untuk memperbarui ranking.")
         else:
             st.info("Klik **Run global scan** di sidebar untuk mulai scan universe.")
 
 with tab2:
     st.subheader("🏦 Institutional Forward Score")
-    st.caption("Dibagi menjadi overview, factor breakdown, smart money, forward fundamental, entry plan, dan detail saham.")
+    st.caption("Dibagi menjadi overview, factor breakdown, smart money, forward fundamental proxy, entry plan, dan detail saham. Confidence akan ikut turun bila coverage data tipis.")
 
     c1, c2, c3 = st.columns([1.2, 1.0, 1.0])
     with c1:
@@ -1330,9 +1590,23 @@ with tab2:
             cols[2].metric("Stop Loss", f'Rp {plan.get("stop_loss_plan", np.nan):,.0f}' if pd.notna(plan.get("stop_loss_plan", np.nan)) else "n/a")
             cols[3].metric("Trigger", plan.get("entry_trigger", "n/a"), plan.get("plan_reason", "n/a"))
 
+            trade_cols = st.columns(4)
+            trade_cols[0].metric("Tradeability", f'{plan.get("tradeability_score", np.nan):.2f}' if pd.notna(plan.get("tradeability_score", np.nan)) else "n/a")
+            trade_cols[1].metric("Trade Gate", "OK" if plan.get("tradeability_ok", False) else "BLOCK", plan.get("tradeability_reason", "n/a"))
+            trade_cols[2].metric("Lifecycle", plan.get("setup_lifecycle_stage", "n/a"), plan.get("setup_validity_reason", "n/a"))
+            trade_cols[3].metric("Next Action", plan.get("setup_next_action", "n/a"), "Valid" if plan.get("setup_validity_ok", False) else "Invalid")
+
             entry_table = pd.DataFrame(
                 [
                     {"Metric": "Decision", "Value": stock_res.get("decision", "n/a")},
+                    {"Metric": "Tradeability Score", "Value": f'{plan.get("tradeability_score", np.nan):.2f}' if pd.notna(plan.get("tradeability_score", np.nan)) else "n/a"},
+                    {"Metric": "Trade Gate", "Value": "OK" if plan.get("tradeability_ok", False) else "BLOCK"},
+                    {"Metric": "Lifecycle Stage", "Value": plan.get("setup_lifecycle_stage", "n/a")},
+                    {"Metric": "Setup Valid", "Value": "YES" if plan.get("setup_validity_ok", False) else "NO"},
+                    {"Metric": "Validity Reason", "Value": plan.get("setup_validity_reason", "n/a")},
+                    {"Metric": "Next Action", "Value": plan.get("setup_next_action", "n/a")},
+                    {"Metric": "Entry Valid", "Value": "YES" if plan.get("entry_valid", False) else "NO"},
+                    {"Metric": "Entry Mode", "Value": plan.get("entry_mode", "n/a")},
                     {"Metric": "Entry Zone Low", "Value": f'Rp {plan.get("entry_zone_low", np.nan):,.0f}' if pd.notna(plan.get("entry_zone_low", np.nan)) else "n/a"},
                     {"Metric": "Entry Zone High", "Value": f'Rp {plan.get("entry_zone_high", np.nan):,.0f}' if pd.notna(plan.get("entry_zone_high", np.nan)) else "n/a"},
                     {"Metric": "Entry Trigger", "Value": plan.get("entry_trigger", "n/a")},
@@ -1403,7 +1677,7 @@ with tab2:
                         raw_news = fetch_indonesia_news_items(news_symbol, news_limit)
                     else:
                         raw_news = fetch_ticker_news_items(news_symbol, news_limit)
-                    scored_news = filter_news_items(raw_news) if raw_news else []
+                    scored_news = filter_news_items(raw_news, symbol=news_symbol) if raw_news else []
                     cache = {
                         "symbol": news_symbol,
                         "source_mode": news_source_mode,
@@ -1421,7 +1695,7 @@ with tab2:
                     fallback_news = fetch_ticker_news_search_items(news_symbol, news_limit)
                 if fallback_news:
                     raw_news = fallback_news
-                    scored_news = filter_news_items(raw_news)
+                    scored_news = filter_news_items(raw_news, symbol=news_symbol)
                     cache = {
                         "symbol": news_symbol,
                         "source_mode": news_source_mode,
@@ -1433,7 +1707,7 @@ with tab2:
 
         else:
             raw_news = _parse_manual_news_lines(news_paste)
-            scored_news = filter_news_items(raw_news) if raw_news else []
+            scored_news = filter_news_items(raw_news, symbol=news_symbol) if raw_news else []
             if fetch_clicked:
                 cache = {
                     "symbol": news_symbol,
@@ -1445,7 +1719,7 @@ with tab2:
 
         if news_source_mode == "Paste manual" and fetch_clicked:
             raw_news = _parse_manual_news_lines(news_paste)
-            scored_news = filter_news_items(raw_news) if raw_news else []
+            scored_news = filter_news_items(raw_news, symbol=news_symbol) if raw_news else []
             cache = {
                 "symbol": news_symbol,
                 "source_mode": "Paste manual",
@@ -1482,6 +1756,9 @@ with tab2:
                         "Horizon": getattr(item, "impact_horizon", "days"),
                         "Materiality": getattr(item, "materiality", "medium"),
                         "Source Quality": getattr(item, "source_quality", "unknown"),
+                        "Source Tier": getattr(item, "source_tier", getattr(item, "source_quality", "unknown")),
+                        "Freshness": getattr(item, "freshness_score", 0),
+                        "Relevance": getattr(item, "relevance_score", 0),
                         "Title": raw_item.get("title", ""),
                         "Source": raw_item.get("source", ""),
                         "Published": raw_item.get("published_at", ""),
@@ -1504,6 +1781,9 @@ with tab2:
                             "Horizon",
                             "Materiality",
                             "Source Quality",
+                            "Source Tier",
+                            "Freshness",
+                            "Relevance",
                             "Published",
                             "Title",
                             "Source",
@@ -1524,6 +1804,9 @@ with tab2:
                         st.write(f"**Horizon:** {row.get('Horizon', 'days')}")
                         st.write(f"**Materiality:** {row.get('Materiality', 'medium')}")
                         st.write(f"**Source quality:** {row.get('Source Quality', 'unknown')}")
+                        st.write(f"**Source tier:** {row.get('Source Tier', 'unknown')}")
+                        st.write(f"**Freshness score:** {row.get('Freshness', 0)}")
+                        st.write(f"**Relevance score:** {row.get('Relevance', 0)}")
                         if row.get("Published"):
                             st.write(f"**Published:** {row.get('Published')}")
                         if row.get("Source"):
@@ -2027,6 +2310,8 @@ with tab2:
                         "Qual": round(_safe_float(r.get("ifs_breakdown", {}).get("Quality"), np.nan), 1) if isinstance(r.get("ifs_breakdown", {}), dict) else np.nan,
                         "Catalyst": round(_safe_float(r.get("ifs_breakdown", {}).get("Catalyst"), np.nan), 1) if isinstance(r.get("ifs_breakdown", {}), dict) else np.nan,
                         "Decision": r.get("decision", "-"),
+                        "Tradeability": round(_safe_float(r.get("tradeability_score"), np.nan), 1) if pd.notna(r.get("tradeability_score", np.nan)) else np.nan,
+                        "TradeGate": "OK" if r.get("tradeability_gate_ok", False) else "BLOCK",
                         "MarketStruct": round(_safe_float(r.get("market_structure_score"), np.nan), 1) if pd.notna(r.get("market_structure_score", np.nan)) else np.nan,
                     }
                 )
@@ -2058,7 +2343,7 @@ with tab2:
         if ifs_context is not None and stock_res is not None:
             sm_cols = st.columns(4)
             sm_cols[0].metric("Smart Money Score", f'{ifs_context.get("ifs_detail", {}).get("smart_money_score", np.nan):.2f}')
-            sm_cols[1].metric("Accumulation", f'{ifs_context.get("ifs_detail", {}).get("accumulation_score", np.nan):.2f}')
+            sm_cols[1].metric("Tradeability", f'{stock_res.get("tradeability_score", np.nan):.2f}' if pd.notna(stock_res.get("tradeability_score", np.nan)) else "n/a")
             sm_cols[2].metric("CMF20", f'{stock_res.get("cmf20", np.nan):.2f}' if pd.notna(stock_res.get("cmf20", np.nan)) else "n/a")
             sm_cols[3].metric("Unicorn", stock_res.get("unicorn_setup_status", "n/a"))
             smart_table = pd.DataFrame(
@@ -2423,3 +2708,281 @@ with tab4:
                 st.success(f"Bundle tersimpan di: {saved.get('bundle_dir', 'n/a')}")
         except Exception as exc:
             st.error(f"Gagal membaca universe CSV: {type(exc).__name__}: {exc}")
+
+
+with tab5:
+    st.subheader("💼 Live Portfolio / Execution Ledger")
+    st.caption(
+        "Ledger ini menyimpan posisi, order, fill, dan event ke storage persisten. "
+        "Session state hanya dipakai untuk UI; reload tidak boleh menghapus catatan ledger."
+    )
+
+    pe.init_store()
+    pe.ensure_account(account_id="default", label="Main", starting_capital=float(st.session_state.get("live_starting_capital", 100_000_000.0)))
+    summary = pe.get_account_summary(account_id="default")
+
+    st.info(summary["warning"])
+    st.caption(f"Backend aktif: `{summary["backend"]}` | State path: `{summary["state_path"]}`")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Equity", f'Rp {summary["equity"]:,.0f}')
+    c2.metric("Cash", f'Rp {summary["cash"]:,.0f}')
+    c3.metric("P/L", f'Rp {summary["total_pnl"]:,.0f}', f'Realized {summary["realized_pnl"]:,.0f}')
+    c4.metric("Open Positions", f'{summary["open_positions"]}')
+
+    with st.expander("⚙️ Account & Risk Settings", expanded=True):
+        s1, s2, s3, s4 = st.columns(4)
+        with s1:
+            live_starting_capital = st.number_input(
+                "Starting capital (Rp)",
+                min_value=1_000_000.0,
+                value=float(st.session_state.get("live_starting_capital", 100_000_000.0)),
+                step=1_000_000.0,
+            )
+        with s2:
+            risk_pct = st.number_input(
+                "Risk per trade (%)",
+                min_value=0.1,
+                max_value=5.0,
+                value=float(st.session_state.get("live_risk_pct", 1.0)),
+                step=0.1,
+            )
+        with s3:
+            max_notional_pct = st.number_input(
+                "Max notional / trade (%)",
+                min_value=1.0,
+                max_value=100.0,
+                value=float(st.session_state.get("live_max_notional_pct", 20.0)),
+                step=1.0,
+            )
+        with s4:
+            lot_size = st.number_input(
+                "Lot size",
+                min_value=1,
+                max_value=10_000,
+                value=int(st.session_state.get("live_lot_size", 100)),
+                step=1,
+            )
+
+        init_col, reset_col = st.columns(2)
+        with init_col:
+            if st.button("Initialize / update account", type="primary"):
+                pe.ensure_account(account_id="default", label="Main", starting_capital=float(live_starting_capital))
+                st.session_state["live_starting_capital"] = float(live_starting_capital)
+                st.session_state["live_risk_pct"] = float(risk_pct)
+                st.session_state["live_max_notional_pct"] = float(max_notional_pct)
+                st.session_state["live_lot_size"] = int(lot_size)
+                pe.record_event(
+                    "account_settings_updated",
+                    {
+                        "starting_capital": float(live_starting_capital),
+                        "risk_pct": float(risk_pct),
+                        "max_notional_pct": float(max_notional_pct),
+                        "lot_size": int(lot_size),
+                    },
+                )
+                st.success("Account settings tersimpan.")
+                st.rerun()
+        with reset_col:
+            if st.button("Refresh live ledger snapshot"):
+                st.rerun()
+
+    analysis_bundle = st.session_state.get("ifs_analysis", {})
+    selected_symbol = str(analysis_bundle.get("symbol") or st.session_state.get("deep_selected_symbol") or "BMRI.JK")
+    stock_res = analysis_bundle.get("stock_res", {}) or {}
+    entry_plan = stock_res.get("entry_plan", {}) or {}
+    st.markdown(f"**Selected ticker:** `{selected_symbol}`")
+    st.caption("Order plan di bawah memakai hasil analisa terakhir dari Tab 2.")
+
+    plan_entry = entry_plan.get("entry_price_plan", entry_plan.get("entry_price", np.nan))
+    plan_stop = entry_plan.get("stop_loss_plan", entry_plan.get("stop_price", np.nan))
+    plan_tp1 = entry_plan.get("target_1", np.nan)
+    plan_tp2 = entry_plan.get("target_2", np.nan)
+
+    if pd.notna(plan_entry) and pd.notna(plan_stop):
+        sizing = pe.estimate_position_size(
+            cash=summary["cash"],
+            entry_price=float(plan_entry),
+            stop_price=float(plan_stop),
+            risk_pct=float(risk_pct) / 100.0,
+            max_notional_pct=float(max_notional_pct) / 100.0,
+            lot_size=int(lot_size),
+        )
+        sc1, sc2, sc3, sc4 = st.columns(4)
+        sc1.metric("Suggested Qty", f"{int(sizing['qty']):,}")
+        sc2.metric("Risk / Share", f"Rp {float(sizing['risk_per_share']):,.0f}" if np.isfinite(sizing["risk_per_share"]) else "n/a")
+        sc3.metric("Risk Budget", f"Rp {float(sizing['risk_budget']):,.0f}")
+        sc4.metric("Sizing Status", sizing.get("reason", "n/a"))
+    else:
+        sizing = {"qty": 0, "reason": "missing_entry_or_stop"}
+        st.warning("Entry plan belum lengkap, jadi ukuran posisi tidak bisa dihitung.")
+
+    order_tab, history_tab, backup_tab = st.tabs(["Order Builder", "Ledger", "Backup / Restore"])
+
+    with order_tab:
+        if not entry_plan:
+            st.info("Analisa ticker dulu di Tab 2 agar order builder mendapat entry plan.")
+        else:
+            with st.form("live_order_form", clear_on_submit=False):
+                o1, o2, o3 = st.columns(3)
+                with o1:
+                    side = st.selectbox("Side", ["BUY", "SELL"], index=0)
+                    order_type = st.selectbox("Order type", ["LIMIT", "MARKET"], index=0)
+                with o2:
+                    qty_default = int(sizing["qty"]) if int(sizing.get("qty", 0) or 0) > 0 else 100
+                    qty = st.number_input("Qty", min_value=1, step=100, value=max(1, qty_default))
+                    limit_price = st.number_input(
+                        "Limit / planned entry price",
+                        min_value=0.0,
+                        value=float(plan_entry) if pd.notna(plan_entry) else float(stock_res.get("close", 0.0)),
+                        step=10.0,
+                    )
+                with o3:
+                    stop_price = st.number_input(
+                        "Stop price",
+                        min_value=0.0,
+                        value=float(plan_stop) if pd.notna(plan_stop) else 0.0,
+                        step=10.0,
+                    )
+                    signal_hash = st.text_input("Signal hash", value=str(entry_plan.get("signal_hash", "")))
+
+                notes = st.text_area(
+                    "Notes",
+                    value=f"{selected_symbol} | {entry_plan.get('plan_reason', 'scanner')} | tradeability={entry_plan.get('tradeability_reason', 'n/a')}",
+                    height=90,
+                )
+                submit_order = st.form_submit_button("Save planned order", type="primary")
+
+                if submit_order:
+                    try:
+                        order_id = pe.create_order(
+                            symbol=selected_symbol,
+                            side=side,
+                            qty=int(qty),
+                            order_type=order_type,
+                            limit_price=float(limit_price) if order_type == "LIMIT" else None,
+                            stop_price=float(stop_price) if stop_price > 0 else None,
+                            status="PLANNED",
+                            source="scanner",
+                            signal_hash=signal_hash,
+                            notes=notes,
+                        )
+                        pe.record_event(
+                            "planned_order_saved",
+                            {
+                                "order_id": order_id,
+                                "symbol": selected_symbol,
+                                "side": side,
+                                "qty": int(qty),
+                                "order_type": order_type,
+                                "limit_price": float(limit_price) if order_type == "LIMIT" else None,
+                                "stop_price": float(stop_price) if stop_price > 0 else None,
+                            },
+                            symbol=selected_symbol,
+                        )
+                        st.success(f"Order tersimpan: {order_id}")
+                    except Exception as exc:
+                        st.error(f"Gagal menyimpan order: {type(exc).__name__}: {exc}")
+
+            st.markdown("#### Quick actions")
+            q1, q2 = st.columns(2)
+            with q1:
+                if st.button("Save scanner signal only"):
+                    try:
+                        pe.record_event(
+                            "scanner_signal",
+                            {
+                                "symbol": selected_symbol,
+                                "decision": stock_res.get("decision", ""),
+                                "score": float(stock_res.get("score", np.nan)) if pd.notna(stock_res.get("score", np.nan)) else None,
+                                "tradeability": float(stock_res.get("tradeability_score", np.nan)) if pd.notna(stock_res.get("tradeability_score", np.nan)) else None,
+                                "entry": float(plan_entry) if pd.notna(plan_entry) else None,
+                                "stop": float(plan_stop) if pd.notna(plan_stop) else None,
+                            },
+                            symbol=selected_symbol,
+                        )
+                        st.success("Signal disimpan ke ledger.")
+                    except Exception as exc:
+                        st.error(f"Gagal menyimpan signal: {type(exc).__name__}: {exc}")
+            with q2:
+                if st.button("Simulate paper fill on planned BUY"):
+                    try:
+                        sim = pe.simulate_limit_execution(
+                            side="BUY",
+                            order_price=float(plan_entry) if pd.notna(plan_entry) else float(stock_res.get("close", 0.0)),
+                            open_price=float(stock_res.get("close", 0.0)),
+                            high_price=float(stock_res.get("close", 0.0)),
+                            low_price=float(stock_res.get("close", 0.0)),
+                        )
+                        st.write(sim)
+                    except Exception as exc:
+                        st.error(f"Simulasi gagal: {type(exc).__name__}: {exc}")
+
+    with history_tab:
+        pos_df = pe.list_positions()
+        ord_df = pe.list_orders(limit=200)
+        fill_df = pe.list_fills(limit=200)
+        evt_df = pe.list_events(limit=50)
+
+        st.markdown("#### Positions")
+        if pos_df.empty:
+            st.info("Belum ada posisi tersimpan.")
+        else:
+            show_pos = pos_df.copy()
+            for col in ["avg_price", "mark_price", "stop_loss", "target_1", "target_2"]:
+                if col in show_pos.columns:
+                    show_pos[col] = pd.to_numeric(show_pos[col], errors="coerce")
+            st.dataframe(show_pos, width="stretch", hide_index=True)
+
+        st.markdown("#### Orders")
+        if ord_df.empty:
+            st.info("Belum ada order tersimpan.")
+        else:
+            st.dataframe(ord_df, width="stretch", hide_index=True)
+
+        st.markdown("#### Fills")
+        if fill_df.empty:
+            st.info("Belum ada fill tersimpan.")
+        else:
+            st.dataframe(fill_df, width="stretch", hide_index=True)
+
+        st.markdown("#### Events")
+        if evt_df.empty:
+            st.info("Belum ada event tersimpan.")
+        else:
+            st.dataframe(evt_df, width="stretch", hide_index=True)
+
+        st.markdown("#### Trade Journal")
+        journal_df = pe.list_trade_journal(limit=200)
+        if journal_df.empty:
+            st.info("Belum ada trade journal tersimpan.")
+        else:
+            show_journal = journal_df.copy()
+            for col in ["score", "ifs_score", "catalyst_score", "tradeability_score", "entry_price", "stop_price", "target_1", "target_2", "risk_reward_1", "risk_reward_2", "value_traded_20d", "spread_proxy_20d", "gap_proxy_20d"]:
+                if col in show_journal.columns:
+                    show_journal[col] = pd.to_numeric(show_journal[col], errors="coerce")
+            st.dataframe(show_journal, width="stretch", hide_index=True)
+
+    with backup_tab:
+        backup_payload = pe.export_state()
+        backup_json = json.dumps(backup_payload, ensure_ascii=False, indent=2, default=str)
+        st.download_button(
+            "Download portfolio backup JSON",
+            data=backup_json.encode("utf-8"),
+            file_name=f"portfolio_backup_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json",
+        )
+
+        st.markdown("#### Restore from backup JSON")
+        st.caption("Backup JSON berguna sebagai cadangan manual. Untuk source of truth live, pakai Supabase/Postgres remote.")
+        uploaded_backup = st.file_uploader("Upload JSON backup", type=["json"], key="portfolio_backup_upload")
+        replace_existing = st.checkbox("Replace existing tables on restore", value=False)
+        if uploaded_backup is not None and st.button("Import uploaded backup"):
+            try:
+                payload = json.loads(uploaded_backup.read().decode("utf-8"))
+                counts = pe.import_state(payload, replace=replace_existing)
+                st.success(f"Restore selesai: {counts}")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Gagal restore backup: {type(exc).__name__}: {exc}")
+

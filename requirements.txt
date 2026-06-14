@@ -4,3 +4,5 @@ pandas
 numpy
 plotly
 scipy
+
+psycopg2-binary
