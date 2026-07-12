@@ -1,7 +1,0 @@
-streamlit 3.11
-yfinance
-pandas
-numpy
-plotly
-scipy
-psycopg2-binary
