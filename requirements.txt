@@ -7,5 +7,3 @@ yfinance
 requests
 beautifulsoup4
 psycopg2-binary
-python-dateutil
-pytz
