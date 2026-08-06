@@ -1,53 +1,51 @@
-# IDX Emir Autonomous Scanner v1.5.1
+# IDX Emir Autonomous Scanner v1.5.2
 
-Scanner clean-room berbasis kerangka publik Emir dengan alur **ticker-only**, database-first, persistent source cache, incremental refresh, dan exact readback.
+Scanner clean-room berbasis kerangka publik Emir dengan input ticker-only, persistent cache, incremental refresh, dan **best-effort database persistence**.
 
-## Hotfix v1.5.1
+## Perubahan v1.5.2
 
-v1.5.0 berhasil menulis tabel besar, tetapi readback menghitung panjang body REST yang dibatasi PostgREST hingga 1.000 baris. Akibatnya tabel dengan lebih dari 1.000 baris dapat salah ditandai `ROW_COUNT_MISMATCH`. v1.5.1 memakai `Prefer: count=exact` dan `Content-Range`, sehingga verifikasi tetap exact tanpa mengunduh seluruh baris. Tidak ada migration database baru.
-
-## Perubahan utama
-
-v1.5.1 mempertahankan dua cache Supabase:
-
-- `cak_ohlcv_cache`: satu payload OHLCV terkompresi secara struktur per ticker; maksimum periode kerja 3/5 tahun.
-- `cak_source_cache`: cache KSEI, fundamental, dan news per ticker/family.
-
-Alur scan:
+Database tidak lagi menjadi hard publication gate. Scanner sekarang memakai alur:
 
 ```text
 CSV ticker
-→ database v6 preflight
-→ baca persistent cache
-→ gunakan cache yang masih valid
-→ refresh tail OHLCV / sumber yang kedaluwarsa
-→ tulis cache yang berubah
-→ exact key + SHA-256 readback
-→ hitung scanner
-→ tulis 7 tabel hasil scan
-→ exact scan_id readback
-→ publish hasil
+→ periksa tabel cache yang dapat dibaca
+→ gunakan cache valid per ticker/family
+→ ambil ulang hanya data cache yang hilang, rusak, atau kedaluwarsa
+→ hitung radar dan deep review
+→ coba simpan perubahan cache dan hasil scan
+→ tampilkan hasil walaupun persistence parsial atau database tidak tersedia
 ```
 
-Jika cache atau hasil scan gagal diverifikasi, hasil tidak diterbitkan.
+Kegagalan database tidak diubah menjadi data bullish atau nilai default. Data pasar/fundamental/narrative yang tidak tersedia tetap mengikuti fail-closed evidence gate pada masing-masing ticker.
 
-## Cache policy
+## Status persistence
 
-| Keluarga | TTL utama | Perilaku setelah kedaluwarsa |
-|---|---:|---|
-| OHLCV | 12 jam | Ambil tail mulai 14 hari sebelum bar terakhir lalu merge/deduplikasi |
-| KSEI profile/actions | 24 jam | Refresh; last-known-good dapat dipakai sebagai stale fallback terbatas |
-| Fundamental | 7 hari | Refresh hanya ticker deep-review |
-| News | 2 jam | Ambil berita terbaru, merge, deduplikasi, batasi history |
+```text
+SCAN_COMPLETED_FULL_PERSISTENCE
+SCAN_COMPLETED_PARTIAL_PERSISTENCE
+SCAN_COMPLETED_MEMORY_ONLY
+```
 
-`Paksa refresh seluruh cache` tersedia untuk recovery, bukan penggunaan normal.
+- `FULL`: seluruh hasil ditulis dan exact-count verified.
+- `PARTIAL`: sebagian hasil/cache tersimpan; hasil tetap ditampilkan, dan bagian yang tidak tersimpan akan diambil/dihitung ulang pada scan berikutnya.
+- `MEMORY_ONLY`: database tidak tersedia; hasil tetap dapat digunakan pada session Streamlit dan diekspor, tetapi tidak persisten.
 
-## Instalasi
+## Cache behavior
 
-1. Unggah seluruh isi ZIP ke root repository.
-2. Di Supabase SQL Editor, jalankan migration v1 sampai v6 untuk instalasi baru. Untuk database v5 yang sudah sehat, jalankan hanya `database/migration_v6.sql`.
-3. Jalankan `database/verify_v6.sql`.
-4. Pastikan Streamlit Secrets:
+| Keluarga | Perilaku |
+|---|---|
+| OHLCV | cache hit per ticker; cache miss mengambil full period; cache stale mengambil tail 14 hari lalu merge |
+| KSEI | cache valid 24 jam; ticker yang hilang dicari ulang |
+| Fundamental | cache valid 7 hari; hanya shortlist yang direfresh |
+| News | cache valid 2 jam; berita baru di-merge dan dideduplikasi |
+
+Satu ticker cache hit tidak memaksa ticker lain memakai cache. Setiap ticker/family diputuskan secara independen.
+
+## Database
+
+Schema tetap `emir_autonomous_schema_v6`. Tidak ada migration baru dari v1.5.0/v1.5.1.
+
+Secrets yang didukung:
 
 ```toml
 CAK_DATABASE_ENABLED = "true"
@@ -56,22 +54,20 @@ SUPABASE_URL = "https://PROJECT-REF.supabase.co"
 SUPABASE_SECRET_KEY = "sb_secret_..."
 ```
 
-5. Reboot Streamlit. Target preflight: `HEALTHY_EMIR_DATABASE_V6` dan `9/9 tables readable`.
-6. Jalankan cold scan 10 ticker, lalu scan kedua untuk memastikan `CACHE_HIT`.
-7. Setelah itu jalankan 400 ticker.
+Database disarankan, tetapi scan tidak lagi dinonaktifkan bila database belum sehat.
 
-## Status publikasi yang valid
+## Deployment
 
-```text
-CACHE_DATABASE_COMMITTED
-DATABASE_FIRST_COMMITTED
-VERIFIED_ALL_TABLES
-observed_status = VERIFIED_COMMITTED
-```
+1. Ganti isi repository dengan seluruh isi ZIP v1.5.2.
+2. Commit ke branch `main`.
+3. Reboot Streamlit.
+4. Tidak perlu menjalankan migration baru bila schema v6 sudah ada.
+5. Jalankan 10 ticker, lalu periksa tab Database dan Provider Audit.
+6. Lanjutkan 300–400 ticker setelah hasil kecil stabil.
 
 ## Batasan
 
-- Broker inventory dan bid-offer tetap proxy OHLCV/EOD, bukan feed langsung.
-- Cache mempercepat pengambilan ulang; cache tidak memperbaiki data provider yang salah.
-- Fresh live-provider acceptance tetap harus dilihat dari Provider Audit di deployment Streamlit.
-- Cache OHLCV 400 × 760 bar pada validasi sintetis memakai payload sekitar 28 MB sebelum overhead JSONB/Postgres.
+- Broker inventory dan bid-offer otomatis tetap proxy OHLCV/EOD.
+- Hasil `MEMORY_ONLY` hilang saat session Streamlit di-reset jika tidak diunduh.
+- Cache/database tidak memperbaiki data provider yang salah.
+- Readback parsial bukan bukti bahwa baris yang tidak terbaca hilang; scanner tetap melaporkan jumlah write dan readback secara terpisah.
