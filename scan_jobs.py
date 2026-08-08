@@ -9,7 +9,7 @@ import pandas as pd
 from persistence import DatabaseConfig, _request, database_status
 from data_providers import normalize_ticker
 
-JOB_VERSION = "1.7.0"
+JOB_VERSION = "1.7.1"
 ACTIVE_JOB_STATUSES = ("CREATED", "RUNNING", "PAUSED", "FINALIZE_RETRY_REQUIRED")
 TERMINAL_JOB_STATUSES = ("COMPLETED", "COMPLETED_PARTIAL_PERSISTENCE", "CANCELLED", "FAILED")
 STAGE_ORDER = (
