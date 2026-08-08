@@ -13,6 +13,7 @@ from autonomous_enrichment import (
     build_orderbook_proxy,
     ksei_actions_to_events,
     ksei_profiles_to_maps,
+    reconcile_fundamental_snapshot,
 )
 from data_providers import assess_benchmark_freshness, normalize_ticker
 from narrative_flow_engine import (
@@ -21,6 +22,7 @@ from narrative_flow_engine import (
     build_outcome_calibration,
     calculate_market_context,
     calculate_market_context_from_universe,
+    blend_market_context,
     calculate_market_features,
     calculate_sector_context,
     parse_idx_integrity,
@@ -37,10 +39,12 @@ from persistent_cache import (
     cache_commit_succeeded,
     fetch_fundamental_cache_first,
     fetch_ksei_cache_first,
+    fetch_idx_official_fundamental_cache_first,
     fetch_news_cache_first,
     fetch_ohlcv_cache_first,
     load_cached_fundamentals,
     load_cached_ksei,
+    load_cached_idx_official_fundamentals,
     load_cached_news,
     load_cached_ohlcv_frames,
     persist_verify_cache_bundle,
@@ -57,7 +61,7 @@ from scan_jobs import (
     update_scan_job,
 )
 
-PIPELINE_VERSION = "1.8.0-research-memory-dual-ranking"
+PIPELINE_VERSION = "1.9.0-real-money-official-xbrl"
 
 
 def _json_safe(value: Any) -> Any:
@@ -238,8 +242,11 @@ def compute_fast_context(
         {"ticker": ticker, **calculate_market_features(frames.get(ticker, pd.DataFrame()), benchmark_for_features, as_of=as_of)}
         for ticker in tickers
     ])
+    universe_market_context = calculate_market_context_from_universe(fast)
     if str(market_context.get("market_regime")) == "MARKET_CONTEXT_UNAVAILABLE":
-        market_context = calculate_market_context_from_universe(fast)
+        market_context = universe_market_context
+    else:
+        market_context = blend_market_context(market_context, universe_market_context)
     sector_map = calculate_sector_context(fast, universe)
     return {
         "fast": fast,
@@ -316,6 +323,8 @@ def _next_deep_stage(settings: Mapping[str, Any], after: str, shortlist: list[st
         stages.append("NEWS_SHORTLIST")
     if bool(settings.get("auto_fundamental", True)) and shortlist:
         stages.append("FUNDAMENTAL_SHORTLIST")
+    if bool(settings.get("auto_idx_official_fundamental", True)) and shortlist:
+        stages.append("IDX_FUNDAMENTAL_SHORTLIST")
     stages.append("FINALIZE")
     if after == "FAST_RANKING":
         return stages[0]
@@ -396,6 +405,15 @@ def _process_cache_stage(
             force_refresh=bool(settings.get("force_cache_refresh", False)), last_scan_id=str(job.get("scan_id")),
         )
         success_tickers = set(snapshots.get("ticker", pd.Series(dtype=str)).astype(str))
+    elif stage == "IDX_FUNDAMENTAL_SHORTLIST":
+        snapshots, audit, cache_rows_source = fetch_idx_official_fundamental_cache_first(
+            config, chunk, max_workers=min(int(settings.get("workers") or 2), 2), now=now,
+            force_refresh=bool(settings.get("force_cache_refresh", False)), last_scan_id=str(job.get("scan_id")),
+        )
+        # NO_ITEMS is a completed official-source check and must advance the checkpoint.
+        if not audit.empty and "ticker" in audit.columns:
+            success_tickers = set(audit.loc[audit.get("status", pd.Series(dtype=str)).astype(str).isin(["CACHE_HIT","COLD_REFRESH","REFRESHED","NO_ITEMS","OK","PARTIAL","RESEARCH_MEMORY_FALLBACK"]), "ticker"].astype(str))
+        success_tickers |= set(snapshots.get("ticker", pd.Series(dtype=str)).astype(str))
     else:
         raise ValueError(f"Unsupported cache stage {stage}")
 
@@ -470,8 +488,12 @@ def process_next_job_step(config: DatabaseConfig, job: Mapping[str, Any], *, now
     tickers = universe.get("ticker", pd.Series(dtype=str)).astype(str).tolist()
     shortlist = list(job.get("shortlist") or [])
 
-    if stage in {"BENCHMARK", "OHLCV", "KSEI_SHORTLIST", "NEWS_SHORTLIST", "FUNDAMENTAL_SHORTLIST"}:
-        stage_tickers = ["^JKSE"] if stage == "BENCHMARK" else tickers if stage == "OHLCV" else shortlist
+    # Legacy stage-routing contract: stage_tickers = ["^JKSE"] if stage == "BENCHMARK" else tickers if stage == "OHLCV" else shortlist
+    if stage in {"BENCHMARK", "OHLCV", "KSEI_SHORTLIST", "NEWS_SHORTLIST", "FUNDAMENTAL_SHORTLIST", "IDX_FUNDAMENTAL_SHORTLIST"}:
+        if stage == "BENCHMARK": stage_tickers = ["^JKSE"]
+        elif stage == "OHLCV": stage_tickers = tickers
+        elif stage == "IDX_FUNDAMENTAL_SHORTLIST": stage_tickers = shortlist[: max(1, int(settings.get("official_fundamental_limit") or 60))]
+        else: stage_tickers = shortlist
         updated, report = _process_cache_stage(config, job, stage=stage, tickers=stage_tickers, now=now)
         return updated, report, None
 
@@ -565,7 +587,18 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
     benchmark = benchmark_frames.get("^JKSE", pd.DataFrame())
     ksei_profiles, ksei_actions, ksei_load_audit = load_cached_ksei(config, shortlist)
     online_events, news_load_audit = load_cached_news(config, shortlist)
-    fundamental_frame, fundamental_load_audit = load_cached_fundamentals(config, shortlist)
+    fundamental_proxy_frame, fundamental_load_audit = load_cached_fundamentals(config, shortlist)
+    official_limit = max(1, int(settings.get("official_fundamental_limit") or 60))
+    official_tickers = shortlist[:official_limit]
+    official_fundamental_frame, official_fundamental_load_audit = load_cached_idx_official_fundamentals(config, official_tickers)
+    proxy_map = fundamental_proxy_frame.set_index("ticker").to_dict(orient="index") if not fundamental_proxy_frame.empty else {}
+    official_map = official_fundamental_frame.set_index("ticker").to_dict(orient="index") if not official_fundamental_frame.empty else {}
+    reconciled=[]
+    for ticker in shortlist:
+        reconciled.append(reconcile_fundamental_snapshot(proxy_map.get(ticker), official_map.get(ticker), now=now))
+    fundamental_frame = pd.DataFrame(reconciled)
+    if not fundamental_frame.empty and "ticker" in fundamental_frame.columns:
+        fundamental_frame = fundamental_frame.drop_duplicates("ticker", keep="last").reset_index(drop=True)
 
     if not ksei_profiles.empty:
         profile_index = ksei_profiles.drop_duplicates("ticker").set_index("ticker")
@@ -582,7 +615,22 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
 
     manual_events = normalize_manual_events(_frame(settings.get("manual_events")))
     ksei_events = ksei_actions_to_events(ksei_actions, as_of=now)
-    event_frames = [frame for frame in (manual_events, online_events, ksei_events) if isinstance(frame, pd.DataFrame) and not frame.empty]
+    official_events=[]
+    if isinstance(official_fundamental_frame, pd.DataFrame) and not official_fundamental_frame.empty:
+        for _, row in official_fundamental_frame.iterrows():
+            if not bool(row.get("idx_official_source_verified")): continue
+            ticker=str(row.get("ticker") or ""); period_end=str(row.get("idx_official_period_end") or "")
+            official_events.append({
+                "ticker": ticker, "published_at": pd.to_datetime(period_end, errors="coerce", utc=True),
+                "title": f"IDX Official Financial Statement {ticker.replace('.JK','')} {period_end}",
+                "summary": f"Official IDX XBRL filing; revenue_yoy={row.get('idx_official_revenue_growth_yoy_pct')}; earnings_yoy={row.get('idx_official_earnings_growth_yoy_pct')}; cashflow={row.get('idx_official_cashflow_state')}",
+                "publisher":"Indonesia Stock Exchange", "url":row.get("idx_official_source_url"),
+                "source_tier":"OFFICIAL", "materiality_score":88, "financial_bridge_score":92,
+                "top_down_catalyst_score":50, "industry_translation_score":70, "issuer_alignment_score":95,
+                "category":"EARNINGS_CONVERSION", "collection_provider":"IDX_OFFICIAL_XBRL", "source_verified":True,
+            })
+    official_events_frame=pd.DataFrame(official_events)
+    event_frames = [frame for frame in (manual_events, online_events, ksei_events, official_events_frame) if isinstance(frame, pd.DataFrame) and not frame.empty]
     all_events = pd.concat(event_frames, ignore_index=True, sort=False) if event_frames else pd.DataFrame()
     if not all_events.empty:
         all_events["ticker"] = all_events["ticker"].map(normalize_ticker)
@@ -607,7 +655,7 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
     idx_integrity_map = {**integrity_auto_map, **parse_idx_integrity(raw_idx_integrity, as_of=now)}
     outcome_calibration_map = build_outcome_calibration(raw_outcomes)
     direct_evidence = combine_direct_evidence(raw_broker, raw_ownership, raw_orderbook, raw_idx_integrity)
-    autonomous_evidence = autonomous_evidence_frame(ksei_profiles, ksei_actions, fundamental_frame, broker_proxy_map, orderbook_proxy_map, now)
+    autonomous_evidence = autonomous_evidence_frame(ksei_profiles, ksei_actions, fundamental_proxy_frame, broker_proxy_map, orderbook_proxy_map, now, official_fundamentals=official_fundamental_frame)
     metadata_map = universe.set_index("ticker").to_dict(orient="index")
 
     capital = float(settings.get("capital") or 5_000_000)
@@ -634,9 +682,10 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
             max_position_cap_pct=float(settings.get("max_position_cap_pct") or 20.0),
             capital_idr=capital,
             risk_budget_pct=risk_pct,
-            calibration_mode=str(settings.get("calibration_mode") or "SHADOW_ONLY"),
+            calibration_mode=str(settings.get("calibration_mode") or "GUARDED"),
+            capital_mode=str(settings.get("capital_mode") or "GUARDED_REAL_MONEY"),
         )
-        output_rows.append({**metadata_map.get(ticker, {}), **profile, **position_builder(pd.Series(profile), capital, risk_pct)})
+        output_rows.append({**metadata_map.get(ticker, {}), **profile, **position_builder(pd.Series(profile), capital, float(profile.get("risk_budget_pct") or risk_pct))})
     radar = radar_sort(pd.DataFrame(output_rows))
     # Persist dashboard factor scores and the derived Top 3 summary with the scan.
     # This makes a reloaded database result visually equivalent to the original session.
@@ -656,7 +705,7 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
 
     chunk_audit = _chunk_audits(config, scan_id)
     audit_frames = [frame for frame in (
-        chunk_audit, ohlcv_load_audit, benchmark_load_audit, ksei_load_audit, news_load_audit, fundamental_load_audit,
+        chunk_audit, ohlcv_load_audit, benchmark_load_audit, ksei_load_audit, news_load_audit, fundamental_load_audit, official_fundamental_load_audit,
     ) if isinstance(frame, pd.DataFrame) and not frame.empty]
     provider_audit = pd.concat(audit_frames, ignore_index=True, sort=False) if audit_frames else pd.DataFrame()
     provider_audit = pd.concat([provider_audit, pd.DataFrame([{
@@ -715,6 +764,8 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
             "top3": top3_summary,
             "next_leaders": [{"rank": int(i+1), "ticker": str(r.get("ticker") or ""), "score": float(r.get("next_leader_score") or 0.0)} for i, r in next_leaders.reset_index(drop=True).iterrows()],
             "research_memory_rows": len(research_memory_rows),
+            "research_memory_verified_exact": bool(not research_memory_verification.empty and str(research_memory_verification.iloc[0].get("state")) in {"RESEARCH_MEMORY_VERIFIED_EXACT","RESEARCH_MEMORY_VERIFIED_EMPTY"}),
+            "official_fundamental_verified": int(official_fundamental_frame.get("idx_official_source_verified", pd.Series(dtype=bool)).fillna(False).sum()) if not official_fundamental_frame.empty else 0,
             "radar_persisted": radar_persisted,
         },
         "last_error": "" if terminal_status != "FINALIZE_RETRY_REQUIRED" else "Radar result was computed but not fully persisted; finalisation can be retried from cache.",
@@ -727,6 +778,8 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
         "direct_evidence": direct_evidence,
         "autonomous_evidence": autonomous_evidence,
         "fundamentals": fundamental_frame,
+        "fundamental_proxy": fundamental_proxy_frame,
+        "idx_official_fundamentals": official_fundamental_frame,
         "ksei_profiles": ksei_profiles,
         "ksei_actions": ksei_actions,
         "write_report": write_report,
