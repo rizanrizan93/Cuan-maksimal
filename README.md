@@ -1,111 +1,85 @@
-# IDX Emir Autonomous Scanner v1.7.0
+# IDX Emir Autonomous Scanner v1.9.3 — Next Leader Regression Fix
 
-## Emir-methodology hardening: business conversion → narrative/flow → inventory → execution
+Clean-room public-framework implementation. It is not affiliated with Emir Parengkuan and does not claim to reproduce a proprietary CAK formula.
 
-v1.7.0 is a methodology-hardening release built from the public concepts used in the project: macro/sector context, business and future-fundamental conversion, narrative, money flow, smart-money / inventory behaviour, ownership/liquidity, and disciplined execution. It is a **clean-room public synthesis plus empirical IDX proxies**; it is not affiliated with Emir Parengkuan and does not claim to reproduce a proprietary CAK formula.
+## Production path
 
-The release fixes semantic problems found while independently reviewing the v1.6.4 Top-3 output and the 400-ticker small/mid-cap universe.
+Macro/regime → sector opportunity → business/future fundamental → official filing reconciliation → narrative–money flow → inventory/smart-money behaviour → SMC/ICT execution → real-money authorization gate.
 
-## What changed
+## What v1.9 changes
 
-### 1. Fundamental engine: QoQ is no longer mislabeled as general growth
+### 1. Official-first fundamental deep review
+For the top deep-review shortlist (default 60), the scanner attempts the official IDX XBRL `instance.zip` for the newest plausible reporting period. A verified same/newer-period IDX filing is authoritative over Yahoo/public statement proxies. The proxy remains a cross-check and TTM helper, never an “official” source by inference.
 
-The financial snapshot now separates:
+Official evidence records period, URL, source verification, revenue/net income, comparable YoY growth, OCF, capex/FCF proxy, balance-sheet fields and solvency ratios where available. Missing fields remain missing.
 
-- revenue growth YoY and QoQ;
-- earnings growth YoY and QoQ;
-- TTM revenue / net income / operating income;
-- TTM OCF and FCF proxy;
-- current and TTM net / operating margins;
-- TTM ROE and ROA.
+### 2. Durable official research memory
+Official filing payloads are cached in `cak_source_cache` under `IDX_FUNDAMENTAL:*` for fast reuse and stored as versioned `IDX_OFFICIAL_FUNDAMENTAL` evidence in `cak_research_memory`. The original period/source/hash remains available across scans.
 
-Backward-compatible `revenue_growth_pct` and `earnings_growth_pct` prefer same-quarter YoY and explicitly fall back to QoQ only when YoY is unavailable. `growth_basis_state` records the basis.
+### 3. Blended market regime
+Direct IHSG context remains primary (60%) and universe breadth contributes 40%. The result is fail-closed when both are weak, but a single soft benchmark metric no longer forces every stock into RISK_OFF when breadth remains healthy.
 
-### 2. Solvency definitions are explicit
+### 4. GUARDED_REAL_MONEY
+Default UI capital mode is `GUARDED_REAL_MONEY`.
 
-The old generic DER interpretation is no longer allowed to hide ratio-definition differences. The snapshot separates:
+- risk budget is clamped to **0.75% per idea**;
+- manual-confirmation position cap is **max 7.5%**, and **max 5% in RISK_OFF**;
+- missing/stale official fundamental, missing cash-flow evidence, high leverage, poor liquidity, distribution, crowding, weak structure or inadequate RR blocks authorization;
+- an **EOD bid/offer proxy can never make `production_ready=True`**;
+- scanner-side `DIRECT_VERIFIED_READY` additionally requires direct IDX integrity evidence and direct/live bid-offer evidence;
+- without direct evidence, a fully qualified idea becomes `REAL_MONEY_MANUAL_CONFIRMATION_REQUIRED`, not an automatic order;
+- no averaging down below thesis/price invalidation. Adds are permitted only after confirmation.
 
-- interest-bearing debt / equity;
-- total liabilities / equity;
-- net debt / equity;
-- current ratio;
-- cash / debt.
+## Two leaderboards remain separate
 
-`der_ratio` remains for compatibility but is explicitly defined as interest-bearing debt / equity.
+- **The Next Leader**: business/future-fundamental quality and runway.
+- **Execution Top 3**: current inventory/flow/structure/liquidity/entry geometry.
 
-### 3. Business/future fundamental is an independent conviction pillar
+The new **Real Money Gate** tab is the final authorization layer.
 
-Fundamental conversion now contributes **16%** directly to the empirical conviction score and is also a production-readiness gate. Missing business evidence produces `EMIR_FUNDAMENTAL_EVIDENCE_PENDING`; weak conversion produces `EMIR_WAIT_FUNDAMENTAL_CONVERSION`.
+## Persistence layers
 
-Current empirical fixed-denominator pillars:
-
-| Pillar | Weight |
-|---|---:|
-| Flow / inventory | 18% |
-| Fundamental conversion | 16% |
-| Narrative runway | 14% |
-| Market structure | 13% |
-| Sector + macro context | 10% |
-| Financial/narrative conversion blend | 8% |
-| Issuer alignment + ownership | 7% |
-| IDX integrity | 5% |
-| Order-book / EOD microstructure evidence | 4% |
-| Trend | 3% |
-| Liquidity + float | 2% |
-
-These weights are an internal empirical implementation, not an official CAK formula.
-
-### 4. Inventory proxy is multi-horizon
-
-When direct broker data are unavailable, the OHLCV fallback now measures 20/60/120/252/504/756-bar behaviour. It distinguishes persistent collection, inventory release, bottoming-to-collection, and mixed cycles. It remains clearly labelled as a behavioural proxy and never identifies a broker or beneficial owner.
-
-### 5. Markup is not silently re-labelled as early accumulation
-
-A stock already in `MARKUP` with strong recent flow but insufficient story-flow convergence can become `MARKUP_REACCUMULATION_REQUIRED` / `EMIR_WAIT_REACCUMULATION`. The prescribed action is to wait for a healthy pullback/base or an accepted breakout-retest rather than chase.
-
-### 6. Macro-first without a blanket market blocker
-
-`RISK_OFF` remains a penalty and gate. A strict exception is available only for a `LEADING` sector with positive relative strength and positive sector-strength momentum. If it becomes executable under this exception, position size is capped at 5%.
-
-### 7. Dual execution geometry
-
-Accumulation and breakout/retest are separate plans. The scanner reports RR at entry-low and entry-high and builds a distinct breakout entry, stop, targets, and RR. The Top-3 dashboard no longer presents a midpoint `1:3` as though it applied to the entire entry zone.
-
-### 8. Top-3 ranking follows decision-state priority
-
-The dashboard sort now respects deep-review state, decision-state priority, final score, evidence coverage, silent accumulation / flow, then liquidity. A `NO_EDGE` ticker can no longer leapfrog a stronger actionable/watch state merely because of a small score difference.
-
-## Progressive deep review
-
-The resumable all-eligible architecture remains intact. Every eligible ticker can enter deep review, while balanced/fast/custom scopes remain available for shorter workflows. Scan checkpoints and database transfer behaviour are preserved.
+1. `cak_ohlcv_cache` — reusable OHLCV.
+2. `cak_source_cache` — latest KSEI/news/Yahoo fundamental/IDX official fundamental payloads.
+3. `cak_research_memory` — durable content-hashed evidence history across scans.
+4. `cak_scan_jobs` / `cak_scan_job_chunks` — resumable checkpoints.
+5. final point-in-time radar/evidence tables — auditable scan decisions.
 
 ## Database
 
-No new database migration is required from v1.6.4. Schema remains `emir_autonomous_schema_v7`. Version/cache identifiers were raised to v1.7.0 so cached results computed under the old growth/inventory semantics are not silently reused as current analytical output.
+v1.9 continues to use **schema v8**. No destructive migration and no new DB migration are required if v8 is already healthy. Run `database/verify_v8.sql` before the first real-money scan.
 
-## Validation
+## Validation in the build environment
 
-Final local validation for this release:
+- pytest: **141 passed**
+- v1.9-specific tests: XBRL parse, official/proxy reconciliation, OCF/FCF extraction, market blend, durable official memory, EOD-proxy real-money block, direct-verified risk/cap bounds
+- synthetic 400 core engine: **400/400 valid**, 0 hierarchy errors, 0 gate bypass
+- guarded real-money 400: **399 EOD-proxy rows → 0 production-ready**, 1 direct-verified control → 1 ready; max risk **0.75%**, max position cap **7.0%** in fixture
+- fuzz: **2,000 scenarios, 0 crashes, 0 gate bypasses**
+- resumable 300 with official-XBRL stage: **PASS**, official stage limited to 60 tickers
+- database final-result transfer: **exact verified**
+- realistic transient-cache retry: **PASS**
 
-- `pytest`: **117 passed**;
-- synthetic 400-ticker feature validation: **400/400 valid**;
-- invalid production-gate bypass: **0**;
-- valid execution plans: **400/400**;
-- invalid execution hierarchy: **0**;
-- Top-3 dashboard validation: **PASS**;
-- database transfer validation: **PASS**;
-- resumable 300-ticker validation: **PASS**.
+The local build environment could not connect to live IDX static files, so live IDX XBRL connectivity must be smoke-tested in the deployed Streamlit environment. Failure remains fail-closed: it blocks real-money authorization rather than substituting fabricated values.
 
-The build environment cannot certify live Yahoo/KSEI/Google/Supabase network connectivity. A live smoke scan on the deployment environment is still required before trusting production output.
+See `RELEASE_NOTES_V1_9_0.md`, `REAL_MONEY_GUARDRAILS_V1_9_0.md`, `OFFICIAL_IDX_XBRL_CONTRACT_V1_9_0.md`, `TUESDAY_LIVE_CHECKLIST_V1_9_0.md`, and `FILES_TO_REPLACE_V1_9_0.md`.
 
-## Deployment
 
-1. Replace the repository root with the root-ready ZIP contents.
-2. Keep the existing Streamlit/Supabase secrets.
-3. Commit to `main` and reboot Streamlit.
-4. Upload the same 400-ticker CSV.
-5. Run **All eligible (progressive)** for the benchmark scan.
-6. Compare the v1.7 Top-20 / Top-3 with the independent benchmark report included in this release.
-7. Treat only evidence-complete states as candidates for real-money execution; proxy-only states remain decision support.
+## v1.9.3 Next Leader regression fix
 
-See `RELEASE_NOTES_V1_7_0.md`, `METHODOLOGY_AUDIT_V1_7_0.md`, `FILES_TO_REPLACE_V1_7_0.md`, and `INDEPENDENT_400_BENCHMARK_V1_7_0.md`.
+- `The Next Leader` is now a business/future-fundamental leaderboard and no longer uses execution/real-money decision states as eligibility blockers.
+- `EMIR_DATA_INTEGRITY_BLOCK`, smart-money distribution, retail euphoria, or other timing states remain visible as execution overlays but do not erase a fundamentally qualified issuer from the long-horizon ranking.
+- IDX official XBRL is optional by default. Yahoo/public financial statements remain the normal scoring path; official evidence upgrades confidence when available.
+- If the leaderboard is empty, the UI now reports counts of finite fundamental scores, minimum coverage, and data-quality so the cause is diagnosable.
+- No database migration and no persistent-cache schema change.
+
+## v1.9.1+ proxy-tolerant policy
+Official IDX XBRL is a confidence upgrade, not a prerequisite for scoring. Current/aligned Yahoo/public financial statements may score and become manual-confirmation candidates. Proxy-only guarded risk is capped at 0.50% and 3% position cap; direct-ready remains strict.
+
+
+## v1.9.3 Fundamental join integrity fix
+- Preserves ticker keys through proxy/official fundamental reconciliation.
+- Prevents silent empty Next Leader when source fundamentals are valid.
+- Adds `FUNDAMENTAL_JOIN_INTEGRITY_FAILURE` hard gate.
+- Adds chunk-level research-memory retry and truthful 0/N verification UI.
+- No database migration; schema remains v8.
