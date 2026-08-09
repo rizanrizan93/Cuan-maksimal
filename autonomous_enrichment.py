@@ -1187,7 +1187,7 @@ def reconcile_fundamental_snapshot(proxy: Mapping[str, Any] | None, official: Ma
     result["ticker"] = ticker
     off_period = pd.to_datetime(off.get("idx_official_period_end"), errors="coerce")
     proxy_period = pd.to_datetime(base.get("fundamental_latest_period"), errors="coerce")
-    period_ok = pd.notna(off_period) and (pd.isna(proxy_period) or off_period >= proxy_period - pd.Timedelta(days=45))
+    period_ok = pd.notna(off_period) and (pd.isna(proxy_period) or off_period >= proxy_period - pd.to_timedelta(45, unit="D"))
 
     # Determine cross-source agreement before overriding. A 12% tolerance allows vendor
     # presentation/rounding differences while still flagging material mismatches.

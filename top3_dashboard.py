@@ -129,7 +129,68 @@ def _price_change(frame: pd.DataFrame) -> float:
 
 
 
+def _is_bank_like(row: Mapping[str, Any]) -> bool:
+    """Detect deposit-taking banks for which industrial-company ratios are not comparable.
+
+    The public Yahoo proxy can still be used for growth/freshness, but OCF/FCF, current ratio,
+    cash/debt and generic leverage must not create a false quality advantage for banks.
+    """
+    sector = str(row.get("sector") or "").upper()
+    name = str(row.get("company_name") or "").upper()
+    industry = str(row.get("industry") or row.get("industry_name") or "").upper()
+    return bool("FINANCIAL" in sector and ("BANK" in name or "BANK" in industry or "BANKING" in industry))
+
+
+def _growth_score(value: Any, *, revenue: bool) -> float:
+    """Robust 0-100 mapping for YoY growth without rewarding absurd base effects."""
+    v = _num(value, np.nan)
+    if not np.isfinite(v):
+        return 50.0
+    if revenue:
+        xp = np.array([-30.0, -10.0, 0.0, 10.0, 20.0, 30.0, 50.0, 80.0])
+        fp = np.array([5.0, 20.0, 35.0, 55.0, 70.0, 85.0, 97.0, 100.0])
+    else:
+        xp = np.array([-50.0, -15.0, 0.0, 15.0, 30.0, 50.0, 80.0, 150.0])
+        fp = np.array([5.0, 20.0, 35.0, 55.0, 70.0, 85.0, 97.0, 100.0])
+    return float(np.interp(np.clip(v, xp[0], xp[-1]), xp, fp))
+
+
+def _business_momentum(row: Mapping[str, Any]) -> tuple[float, str]:
+    """Prioritise confirmed YTD growth over short-term price/flow behaviour."""
+    q_count = int(_num(row.get("fundamental_ytd_quarters_count"), 0) or 0)
+    rev_ytd = _num(row.get("revenue_growth_ytd_yoy_pct"), np.nan)
+    earn_ytd = _num(row.get("earnings_growth_ytd_yoy_pct"), np.nan)
+    rev_q = _num(row.get("revenue_growth_yoy_pct"), np.nan)
+    earn_q = _num(row.get("earnings_growth_yoy_pct"), np.nan)
+    consistency = str(row.get("fundamental_growth_consistency_state") or "YTD_NOT_AVAILABLE")
+
+    if q_count >= 2 and (np.isfinite(rev_ytd) or np.isfinite(earn_ytd)):
+        rev = _growth_score(rev_ytd, revenue=True)
+        earn = _growth_score(earn_ytd, revenue=False)
+        score = 0.60 * rev + 0.40 * earn
+        basis = "YTD_CONFIRMED_BUSINESS_MOMENTUM"
+    else:
+        rev = _growth_score(rev_q, revenue=True)
+        earn = _growth_score(earn_q, revenue=False)
+        score = 0.60 * rev + 0.40 * earn
+        basis = "LATEST_QUARTER_FALLBACK_MOMENTUM"
+
+    adjustments = {
+        "QUARTER_AND_YTD_CONFIRMED": 5.0,
+        "TURNAROUND_INFLECTION_UNCONFIRMED": -10.0,
+        "LATEST_QUARTER_DECELERATION_YTD_POSITIVE": -6.0,
+        "QUARTER_YTD_DIVERGENCE_REVIEW": -7.0,
+        "QUARTER_AND_YTD_WEAK": -15.0,
+        "YTD_NOT_AVAILABLE": -3.0,
+        "Q1_YTD_EQUALS_QUARTER": -2.0,
+    }
+    score += adjustments.get(consistency, 0.0)
+    return _score(score), basis
+
+
 def calculate_next_leader_score(row: Mapping[str, Any]) -> dict[str, Any]:
+    # v1.9.6: Next Leader is intentionally business-heavy. Execution/flow remains a small
+    # confirming overlay; it must not suppress a fundamentally accelerating compounder.
     fundamental = _score(row.get("fundamental_conversion_score"))
     fundamental_cov = _score(row.get("fundamental_coverage_pct"))
     data_quality = _score(row.get("fundamental_data_quality_score"), fundamental_cov)
@@ -140,38 +201,100 @@ def calculate_next_leader_score(row: Mapping[str, Any]) -> dict[str, Any]:
     smart = _score(row.get("smart_money_score"), 50)
     inventory = _score(row.get("broker_inventory_score"), 50)
     structure = _score(row.get("market_structure_score"), 50)
-    liquidity = _score(row.get("liquidity_score"), 0)
+    liquidity = _score(row.get("liquidity_score"), 50)
     ownership = _score(row.get("ownership_score"), 50)
+    momentum, momentum_basis = _business_momentum(row)
+
+    bank_like = _is_bank_like(row)
+    model_state = "STANDARD_CORPORATE_FUNDAMENTAL_MODEL"
+    quality_flags: list[str] = []
+    effective_fundamental = fundamental
+    effective_data_quality = data_quality
+    if bank_like:
+        # Until bank-specific NPL/NIM/CAR/LDR/BOPO fields are ingested, generic OCF/FCF and
+        # industrial solvency ratios cannot justify a top-quality rating.
+        effective_fundamental = min(fundamental, 70.0)
+        effective_data_quality = min(data_quality, 75.0)
+        model_state = "BANK_GENERIC_PROXY_LIMITED"
+        quality_flags.append("BANK_SPECIFIC_RISK_METRICS_NOT_MODELED")
+
+    net_margin = _num(row.get("net_margin_ttm_pct"), np.nan)
+    roe = _num(row.get("roe_ttm_pct"), np.nan)
+    loss_making = bool((np.isfinite(net_margin) and net_margin < 0) or (np.isfinite(roe) and roe < 0))
+    if loss_making:
+        momentum = min(momentum, 60.0)
+        quality_flags.append("LOSS_MAKING_GROWTH_REVIEW")
+
     raw = _weighted([
-        (fundamental, 0.30), (story, 0.14), (conversion, 0.10), (alignment, 0.07),
-        (sector, 0.10), (smart, 0.08), (inventory, 0.07), (structure, 0.05),
-        (liquidity, 0.05), (ownership, 0.04),
+        (effective_fundamental, 0.30),
+        (momentum, 0.20),
+        (effective_data_quality, 0.05),
+        (story, 0.12),
+        (conversion, 0.09),
+        (alignment, 0.06),
+        (sector, 0.09),
+        (smart, 0.03),
+        (inventory, 0.02),
+        (structure, 0.02),
+        (liquidity, 0.01),
+        (ownership, 0.01),
     ])
+
     penalty = 0.0
     if fundamental_cov < 55: penalty += 12.0
-    if data_quality < 55: penalty += 10.0
-    if str(row.get("fundamental_cashflow_state") or "") == "CASHFLOW_TTM_MISSING": penalty += 8.0
+    if effective_data_quality < 55: penalty += 10.0
+    cashflow_state = str(row.get("fundamental_cashflow_state") or "")
+    # Cash-flow remains evidence-quality information, but missing cash flow no longer dominates
+    # a business ranking; Real Money Gate separately enforces manual verification.
+    if not bank_like and cashflow_state == "CASHFLOW_TTM_MISSING": penalty += 4.0
     if _score(row.get("fundamental_official_source_coverage_pct")) <= 0: penalty += 4.0
+
     freshness = str(row.get("fundamental_period_freshness_state") or "")
     if freshness == "AGING_QUARTERLY_PERIOD": penalty += 6.0
     elif freshness == "LAGGING_REPORTING_PERIOD": penalty += 10.0
     elif freshness in {"STALE_QUARTERLY_PERIOD", "STALE_RELATIVE_TO_UNIVERSE", "UNKNOWN_PERIOD"}: penalty += 15.0
+
     consistency = str(row.get("fundamental_growth_consistency_state") or "")
     if consistency == "TURNAROUND_INFLECTION_UNCONFIRMED": penalty += 10.0
     elif consistency == "LATEST_QUARTER_DECELERATION_YTD_POSITIVE": penalty += 8.0
     elif consistency == "QUARTER_YTD_DIVERGENCE_REVIEW": penalty += 6.0
     elif consistency == "QUARTER_AND_YTD_WEAK": penalty += 12.0
     elif consistency == "YTD_NOT_AVAILABLE": penalty += 2.0
+
     leverage = str(row.get("fundamental_leverage_risk_state") or "")
-    if leverage == "HIGH_LEVERAGE": penalty += 8.0
-    elif leverage == "EXTREME_LEVERAGE": penalty += 16.0
+    if not bank_like:
+        if leverage == "HIGH_LEVERAGE": penalty += 8.0
+        elif leverage == "EXTREME_LEVERAGE": penalty += 16.0
+
+    q_count = int(_num(row.get("fundamental_ytd_quarters_count"), 0) or 0)
+    rev_ytd = _num(row.get("revenue_growth_ytd_yoy_pct"), np.nan)
+    earn_ytd = _num(row.get("earnings_growth_ytd_yoy_pct"), np.nan)
+    if q_count >= 2 and np.isfinite(rev_ytd) and np.isfinite(earn_ytd) and rev_ytd < 10.0 and earn_ytd >= 40.0:
+        penalty += 4.0
+        quality_flags.append("EARNINGS_LED_LOW_TOPLINE_REVIEW")
+    if loss_making:
+        penalty += 8.0
+
+    business_quality_adjustment = 0.0
+    if (
+        q_count >= 2
+        and consistency == "QUARTER_AND_YTD_CONFIRMED"
+        and np.isfinite(rev_ytd) and rev_ytd >= 20.0
+        and np.isfinite(earn_ytd) and earn_ytd >= 25.0
+        and not loss_making
+    ):
+        business_quality_adjustment += 3.0
+        quality_flags.append("BROAD_BASED_YTD_GROWTH_CONFIRMED")
+
+    # Distribution belongs mainly to Execution. Only extreme distribution gets a modest
+    # business-ranking haircut; moderate distribution must not erase compounder quality.
     distribution = _score(row.get("distribution_score"))
-    if distribution >= 60: penalty += 12.0
-    elif distribution >= 45: penalty += 6.0
-    score = _score(raw - penalty)
-    # Next Leader is a business-quality / future-fundamental leaderboard, not an execution gate.
-    # Execution states such as DATA_INTEGRITY_BLOCK, DISTRIBUTION or RETAIL_EUPHORIA must
-    # remain visible as timing/risk overlays, but must not erase a fundamentally qualified issuer.
+    if distribution >= 70: penalty += 5.0
+
+    if bank_like:
+        penalty += 8.0
+
+    score = _score(raw + business_quality_adjustment - penalty)
     fundamental_state = str(row.get("fundamental_state") or "")
     finite_fundamental = np.isfinite(_num(row.get("fundamental_conversion_score")))
     evidence_minimum = bool(fundamental_cov >= 35 and data_quality >= 35 and finite_fundamental)
@@ -179,14 +302,23 @@ def calculate_next_leader_score(row: Mapping[str, Any]) -> dict[str, Any]:
     eligible = bool(evidence_minimum and not fundamental_disqualified)
     if not eligible:
         state = "NEXT_LEADER_NOT_QUALIFIED"
-    elif score >= 70 and fundamental >= 65 and data_quality >= 60:
+    elif score >= 70 and effective_fundamental >= 65 and effective_data_quality >= 60:
         state = "NEXT_LEADER_HIGH_CONVICTION"
-    elif score >= 55 and fundamental >= 55:
+    elif score >= 55 and effective_fundamental >= 55:
         state = "NEXT_LEADER_WATCH"
     else:
         state = "NEXT_LEADER_RESEARCH"
-    return {"next_leader_score": round(score, 1), "next_leader_state": state, "next_leader_eligible": eligible, "next_leader_penalty": round(penalty, 1)}
-
+    return {
+        "next_leader_score": round(score, 1),
+        "next_leader_state": state,
+        "next_leader_eligible": eligible,
+        "next_leader_penalty": round(penalty, 1),
+        "next_leader_business_momentum_score": round(momentum, 1),
+        "next_leader_business_momentum_basis": momentum_basis,
+        "next_leader_business_quality_adjustment": round(business_quality_adjustment, 1),
+        "next_leader_sector_model_state": model_state,
+        "next_leader_quality_flags": " | ".join(quality_flags) or "NONE",
+    }
 
 def select_next_leaders(radar: pd.DataFrame, limit: int = 10) -> pd.DataFrame:
     if radar is None or radar.empty:
@@ -280,6 +412,26 @@ def enrich_dashboard_scores(radar: pd.DataFrame, frames: Mapping[str, pd.DataFra
     leader_scores = local.apply(lambda row: pd.Series(calculate_next_leader_score(row)), axis=1)
     for column in leader_scores.columns:
         local[column] = leader_scores[column]
+
+    # Banks require bank-specific asset-quality/capital/liquidity metrics before being presented
+    # as real-money candidates. Generic corporate proxy ratios are sufficient for research only.
+    bank_limited = local.get("next_leader_sector_model_state", pd.Series("", index=local.index)).eq("BANK_GENERIC_PROXY_LIMITED")
+    bank_metric_coverage = pd.to_numeric(local.get("bank_metric_coverage_pct", pd.Series(0.0, index=local.index)), errors="coerce").fillna(0.0)
+    bank_block = bank_limited & bank_metric_coverage.lt(60.0)
+    if bank_block.any():
+        for idx in local.index[bank_block]:
+            existing = str(local.at[idx, "real_money_block_reasons"] if "real_money_block_reasons" in local.columns else "")
+            reasons = [part.strip() for part in existing.split("|") if part.strip() and part.strip() != "NONE"]
+            if "BANK_SPECIFIC_RISK_METRICS_NOT_MODELED" not in reasons:
+                reasons.append("BANK_SPECIFIC_RISK_METRICS_NOT_MODELED")
+            local.at[idx, "real_money_block_reasons"] = " | ".join(reasons)
+            local.at[idx, "real_money_candidate"] = False
+            local.at[idx, "real_money_entry_candidate"] = False
+            local.at[idx, "real_money_ready"] = False
+            local.at[idx, "real_money_gate_state"] = "REAL_MONEY_BLOCKED"
+            local.at[idx, "entry_authorization_state"] = "NO_ENTRY_AUTHORIZATION"
+            local.at[idx, "guarded_position_cap_after_manual_confirmation_pct"] = 0.0
+
     real_money_scores = local.apply(lambda row: pd.Series(calculate_real_money_candidate_score(row)), axis=1)
     for column in real_money_scores.columns:
         local[column] = real_money_scores[column]

@@ -1,4 +1,4 @@
-# IDX Emir Autonomous Scanner v1.9.3 — Next Leader Regression Fix
+# IDX Emir Autonomous Scanner v1.9.8 — Persistence Integrity
 
 Clean-room public-framework implementation. It is not affiliated with Emir Parengkuan and does not claim to reproduce a proprietary CAK formula.
 
@@ -51,7 +51,7 @@ v1.9 continues to use **schema v8**. No destructive migration and no new DB migr
 
 ## Validation in the build environment
 
-- pytest: **141 passed**
+- pytest: **175 passed**
 - v1.9-specific tests: XBRL parse, official/proxy reconciliation, OCF/FCF extraction, market blend, durable official memory, EOD-proxy real-money block, direct-verified risk/cap bounds
 - synthetic 400 core engine: **400/400 valid**, 0 hierarchy errors, 0 gate bypass
 - guarded real-money 400: **399 EOD-proxy rows → 0 production-ready**, 1 direct-verified control → 1 ready; max risk **0.75%**, max position cap **7.0%** in fixture
@@ -62,7 +62,8 @@ v1.9 continues to use **schema v8**. No destructive migration and no new DB migr
 
 The local build environment could not connect to live IDX static files, so live IDX XBRL connectivity must be smoke-tested in the deployed Streamlit environment. Failure remains fail-closed: it blocks real-money authorization rather than substituting fabricated values.
 
-See `RELEASE_NOTES_V1_9_0.md`, `REAL_MONEY_GUARDRAILS_V1_9_0.md`, `OFFICIAL_IDX_XBRL_CONTRACT_V1_9_0.md`, `TUESDAY_LIVE_CHECKLIST_V1_9_0.md`, and `FILES_TO_REPLACE_V1_9_0.md`.
+See `RELEASE_NOTES_V1_9_7.md`, `VALIDATION_AUDIT_V1_9_7.md`,
+`REAL_MONEY_GUARDRAILS_V1_9_0.md`, and `OFFICIAL_IDX_XBRL_CONTRACT_V1_9_0.md`.
 
 
 ## v1.9.3 Next Leader regression fix
@@ -83,3 +84,56 @@ Official IDX XBRL is a confidence upgrade, not a prerequisite for scoring. Curre
 - Adds `FUNDAMENTAL_JOIN_INTEGRITY_FAILURE` hard gate.
 - Adds chunk-level research-memory retry and truthful 0/N verification UI.
 - No database migration; schema remains v8.
+
+## v1.9.4 Real Money calibration
+- strong diversified public narrative is a MANUAL-confirmation condition rather than an automatic hard block
+- direct/official evidence remains mandatory for DIRECT_VERIFIED_READY
+- candidate quality is separated from entry timing via `real_money_entry_candidate`
+- Real Money Gate includes a separate actionable `Real Money Candidate Top 3`
+- Execution Top 3 is explicitly labeled `Execution Research Top 3`
+- proxy/manual risk remains <=0.50% and cap <=3%
+
+
+## v1.9.5 — Fundamental freshness & YTD consistency
+
+- Fundamental cache schema v4 adds YTD growth/consistency evidence.
+- Absolute freshness is tighter and cross-sectional period lag is calibrated against the active shortlist.
+- A strong standalone quarter with still-negative YTD becomes `TURNAROUND_INFLECTION_UNCONFIRMED`, not fully confirmed growth.
+- Next Leader applies evidence penalties; guarded real-money remains stricter.
+- Database schema remains v8.
+
+
+## v1.9.6 — Sector-aware business-quality calibration
+
+- Next Leader is now business-heavy: fundamental 30%, confirmed business momentum 20%, data quality 5%, future-fundamental narrative/conversion/alignment 27%, sector 9%, execution/flow overlays only 9%.
+- Bank issuers no longer gain a false quality advantage from generic corporate OCF/FCF, current-ratio, cash/debt or DER proxies. Until NPL/NIM/CAR/LDR/BOPO coverage exists, the bank model is `BANK_GENERIC_PROXY_LIMITED` and research-only for Real Money Top 3.
+- Confirmed broad YTD growth receives a small +3 quality adjustment; loss-making growth is capped/penalized; earnings-led low-topline cases receive review flags.
+- Moderate distribution no longer directly penalizes Next Leader; extreme distribution still receives a modest haircut. Execution/Real Money gates remain strict.
+- Manual proxy-backed Real Money candidates display risk budget <=0.50% even when the parent scan is launched in RESEARCH mode.
+- No database migration. Fundamental cache schema remains v4.
+
+## v1.9.7 — Resumable universe integrity
+
+- The complete allow-listed universe metadata now survives CSV parsing, job
+  creation, Supabase JSONB checkpoints, resume, final issuer context, and radar.
+- `rank_universe`, `universe_role`, `priority`, and `yahoo_ticker` from the
+  supplied 300-ticker CSV are retained.
+- Universe hashes are order-independent but metadata-sensitive, preventing a
+  stale resumable job from being reused after sector/theme/catalyst changes.
+- Blank ticker cells no longer become the false symbol `NAN.JK`.
+- Database/checkpoint failures stop safely in Streamlit and keep committed
+  progress resumable.
+- Schema v8 verification now checks all 12 runtime tables and service-role
+  SELECT/INSERT/UPDATE privileges.
+- v1.9.6 analytical weights and cache schema v4 remain unchanged.
+
+## v1.9.8 — Persistence integrity
+
+- Blank, `NaT`, or invalid fundamental periods are stored as SQL `NULL`, never
+  sent as invalid values to `cak_research_memory.effective_period`.
+- A scan is reported as full persistence only when both final scan tables and
+  durable research memory are exact-count verified.
+- Database trigger functions use a fixed safe search path and privileged helper
+  functions are no longer executable by API roles.
+- v1.9.6 scoring weights, v1.9.7 universe metadata, and schema-v8 table contracts
+  remain unchanged.

@@ -11,7 +11,7 @@ import pandas as pd
 from data_providers import normalize_ticker
 
 
-ENGINE_VERSION = "1.9.5-fundamental-freshness-ytd-consistency"
+ENGINE_VERSION = "1.9.8-persistence-integrity"
 FRAMEWORK_DISCLAIMER = "PUBLIC_CLEAN_ROOM_RECONSTRUCTION_NOT_AFFILIATED_NOT_PROPRIETARY"
 
 # The registry separates what Emir has stated publicly from our own quantitative proxy.
@@ -255,7 +255,7 @@ PUBLIC_FORMULA_REGISTRY: tuple[dict[str, str], ...] = (
         "formula_id": "EP40_FUNDAMENTAL_FRESHNESS_YTD_CONSISTENCY",
         "provenance_class": "EMPIRICAL_PROXY",
         "public_basis": "A strong latest quarter is more reliable when the cumulative/YTD business trend confirms it; stale relative reporting periods should not rank like current evidence.",
-        "scanner_implementation": "v1.9.5 stores standalone-quarter and calendar-YTD growth separately, flags positive-quarter/negative-YTD inflections as unconfirmed, tightens absolute freshness, and applies cross-sectional reporting-period lag penalties before Next Leader and Real Money ranking.",
+        "scanner_implementation": "v1.9.8 preserves the frozen v1.9.6 sector-aware business-quality calibration and the v1.9.7 universe contract; this release repairs typed-date persistence and truthful durability status only, not scoring weights.",
     },
 )
 
@@ -2211,6 +2211,13 @@ def build_emir_profile(
     effective_risk_budget = min(max(0.0,_finite(risk_budget_pct,0.5)),0.75) if guarded_real_money else max(0.0,_finite(risk_budget_pct,1.0))
     if guarded_real_money and (proxy_only or cashflow_missing):
         effective_risk_budget = min(effective_risk_budget, 0.50)
+    # v1.9.6: a MANUAL real-money candidate must display the guarded manual risk budget
+    # even when the surrounding scan was launched in RESEARCH mode. This avoids a 1.0%
+    # research risk field leaking into the Real Money Candidate table.
+    if real_money_entry_candidate and not real_money_ready:
+        effective_risk_budget = min(effective_risk_budget, 0.50)
+    elif real_money_ready:
+        effective_risk_budget = min(effective_risk_budget, 0.75)
     manual_cap = min(max(0.0,requested_cap), 5.0 if market_regime=="RISK_OFF" else 7.5) if real_money_entry_candidate else 0.0
     if proxy_only or cashflow_missing or not manual_verified_story:
         manual_cap = min(manual_cap, 3.0)

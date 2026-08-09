@@ -31,6 +31,13 @@ _MIN_REQUEST_INTERVAL_SECONDS = 0.12
 
 KSEI_PROFILE_URL = "https://web.ksei.co.id/services/registered-securities/shares/lc/{ticker}?setLocale=en-US"
 
+UNIVERSE_METADATA_COLUMNS: tuple[str, ...] = (
+    "ticker", "yahoo_ticker", "company_name", "sector", "theme", "macro_theme",
+    "secular_trend", "catalyst", "universe_note", "cap_universe", "sharia_status",
+    "active_scan", "universe_rank", "universe_role", "priority", "universe_as_of",
+    "ojk_source_url", "large_cap_screen_source_url",
+)
+
 
 def parse_ksei_price_history_html(html: str) -> pd.DataFrame:
     """Parse KSEI public price history. KSEI volume is displayed in lots, so convert to shares."""
@@ -122,8 +129,15 @@ class FetchResult:
 
 
 def normalize_ticker(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if bool(pd.isna(value)):
+            return ""
+    except (TypeError, ValueError):
+        pass
     text = str(value or "").strip().upper()
-    if not text:
+    if not text or text in {"NAN", "NONE", "NULL", "NAT", "TICKER"}:
         return ""
     if text.startswith("^") or text.endswith("=X"):
         return text
@@ -136,16 +150,11 @@ def bare_ticker(value: Any) -> str:
 
 def parse_universe_frame(uploaded: Any) -> pd.DataFrame:
     frame = pd.read_csv(uploaded)
-    metadata_columns = [
-        "ticker", "company_name", "sector", "theme", "macro_theme", "secular_trend", "catalyst", "universe_note",
-        "cap_universe", "sharia_status", "active_scan", "universe_rank", "universe_as_of",
-        "ojk_source_url", "large_cap_screen_source_url",
-    ]
     if frame.empty:
-        return pd.DataFrame(columns=metadata_columns)
+        return pd.DataFrame(columns=UNIVERSE_METADATA_COLUMNS)
     local = frame.copy()
     local.columns = [str(column).strip().lower() for column in local.columns]
-    candidates = [column for column in local.columns if column in {"ticker", "symbol", "kode", "code"}]
+    candidates = [column for column in local.columns if column in {"ticker", "symbol", "kode", "code", "yahoo_ticker"}]
     ticker_column = candidates[0] if candidates else local.columns[0]
     local["ticker"] = local[ticker_column].map(normalize_ticker)
     aliases = {
@@ -156,18 +165,20 @@ def parse_universe_frame(uploaded: Any) -> pd.DataFrame:
         "secular": "secular_trend", "secular_theme": "secular_trend",
         "trigger_catalyst": "catalyst",
         "note": "universe_note", "notes": "universe_note",
+        "rank_universe": "universe_rank", "rank": "universe_rank",
+        "role": "universe_role", "scan_priority": "priority",
     }
     for source, target in aliases.items():
         if source in local.columns and target not in local.columns:
             local[target] = local[source]
-    for column in ("company_name", "sector", "theme", "macro_theme", "secular_trend", "catalyst", "universe_note",
-                   "cap_universe", "sharia_status", "active_scan", "universe_rank", "universe_as_of",
-                   "ojk_source_url", "large_cap_screen_source_url"):
+    for column in UNIVERSE_METADATA_COLUMNS:
+        if column == "ticker":
+            continue
         if column not in local.columns:
             local[column] = ""
         local[column] = local[column].fillna("").astype(str).str.strip()
     local = local[local["ticker"].ne("")].drop_duplicates("ticker", keep="first")
-    return local[metadata_columns].reset_index(drop=True)
+    return local[list(UNIVERSE_METADATA_COLUMNS)].reset_index(drop=True)
 
 
 def parse_universe_csv(uploaded: Any) -> list[str]:
@@ -324,7 +335,7 @@ def yahoo_chart_window(
     """Fetch a bounded daily window for incremental cache refresh."""
     symbol = normalize_ticker(ticker)
     start_ts = pd.Timestamp(start)
-    end_ts = pd.Timestamp(end) if end is not None else pd.Timestamp.now(tz="UTC") + pd.Timedelta(days=1)
+    end_ts = pd.Timestamp(end) if end is not None else pd.Timestamp.now(tz="UTC") + pd.to_timedelta(1, unit="D")
     if start_ts.tzinfo is None:
         start_ts = start_ts.tz_localize("UTC")
     else:
@@ -424,7 +435,7 @@ def fetch_ohlcv_window(
         try:
             captured = StringIO()
             start_ts = pd.Timestamp(start)
-            end_ts = pd.Timestamp(end) if end is not None else pd.Timestamp.now(tz="UTC") + pd.Timedelta(days=1)
+            end_ts = pd.Timestamp(end) if end is not None else pd.Timestamp.now(tz="UTC") + pd.to_timedelta(1, unit="D")
             if start_ts.tzinfo is not None:
                 start_ts = start_ts.tz_convert("UTC").tz_localize(None)
             if end_ts.tzinfo is not None:
@@ -715,6 +726,6 @@ def fetch_many_news(
 
 
 __all__ = [
-    "FetchResult", "bare_ticker", "completed_session_frame", "fetch_many_news", "fetch_many_ohlcv", "fetch_ohlcv_window", "yahoo_chart_window",
+    "FetchResult", "UNIVERSE_METADATA_COLUMNS", "bare_ticker", "completed_session_frame", "fetch_many_news", "fetch_many_ohlcv", "fetch_ohlcv_window", "yahoo_chart_window",
     "ksei_price_history", "normalize_ticker", "parse_ksei_price_history_html", "parse_universe_csv", "parse_universe_frame", "_sanitize_ohlcv",
 ]

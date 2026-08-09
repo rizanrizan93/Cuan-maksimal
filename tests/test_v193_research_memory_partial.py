@@ -1,5 +1,6 @@
 import pandas as pd
 import research_memory as rm
+import resumable_scan as rs
 from persistence import DatabaseConfig
 
 class _Resp:
@@ -39,3 +40,31 @@ def test_research_memory_does_not_lie_when_all_writes_fail(monkeypatch):
     assert int(write.iloc[0]["rows_written"])==0
     assert verify.iloc[0]["state"]!="RESEARCH_MEMORY_VERIFIED_EXACT"
     assert int(verify.iloc[0]["rows_verified"])==0
+
+
+def test_blank_or_nat_effective_period_is_persisted_as_null():
+    evidence = pd.DataFrame([
+        {"ticker": "A.JK", "evidence_type": "PUBLIC_FUNDAMENTAL_PROXY", "fundamental_latest_period": "", "observed_at": ""},
+        {"ticker": "B.JK", "evidence_type": "PUBLIC_FUNDAMENTAL_PROXY", "fundamental_latest_period": "NaT", "observed_at": pd.NaT},
+    ])
+    rows = rm.build_research_memory_rows("scan-date-contract", pd.DataFrame(), evidence)
+    assert len(rows) == 2
+    assert all(row["effective_period"] is None for row in rows)
+    assert all(row["observed_at"] is None for row in rows)
+
+
+def test_full_scan_tables_with_failed_memory_is_truthfully_partial():
+    failed = pd.DataFrame([{"state": "RESEARCH_MEMORY_VERIFY_PARTIAL"}])
+    exact = pd.DataFrame([{"state": "RESEARCH_MEMORY_VERIFIED_EXACT"}])
+    assert rs._combined_persistence_state(
+        "SCAN_COMPLETED_FULL_PERSISTENCE",
+        database_ready=True,
+        expected_research_memory=10,
+        research_memory_verification=failed,
+    ) == "SCAN_COMPLETED_PARTIAL_PERSISTENCE"
+    assert rs._combined_persistence_state(
+        "SCAN_COMPLETED_FULL_PERSISTENCE",
+        database_ready=True,
+        expected_research_memory=10,
+        research_memory_verification=exact,
+    ) == "SCAN_COMPLETED_FULL_PERSISTENCE"

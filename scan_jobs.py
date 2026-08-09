@@ -7,9 +7,9 @@ import json
 import pandas as pd
 
 from persistence import DatabaseConfig, _request, database_status
-from data_providers import normalize_ticker
+from data_providers import UNIVERSE_METADATA_COLUMNS, normalize_ticker
 
-JOB_VERSION = "1.9.1"
+JOB_VERSION = "1.9.8"
 ACTIVE_JOB_STATUSES = ("CREATED", "RUNNING", "PAUSED", "FINALIZE_RETRY_REQUIRED")
 TERMINAL_JOB_STATUSES = ("COMPLETED", "COMPLETED_PARTIAL_PERSISTENCE", "CANCELLED", "FAILED")
 STAGE_ORDER = (
@@ -35,35 +35,55 @@ def normalized_universe_records(universe: pd.DataFrame | Iterable[str]) -> list[
         local.columns = [str(column).strip().lower() for column in local.columns]
         if "ticker" not in local.columns:
             return []
-        for column in ("company_name", "sector"):
+        for column in UNIVERSE_METADATA_COLUMNS:
             if column not in local.columns:
                 local[column] = ""
-        records = local[["ticker", "company_name", "sector"]].to_dict(orient="records")
+        records = local[list(UNIVERSE_METADATA_COLUMNS)].to_dict(orient="records")
     else:
-        records = [{"ticker": ticker, "company_name": "", "sector": ""} for ticker in universe]
+        records = [{"ticker": ticker} for ticker in universe]
+
+    def clean(value: Any) -> str:
+        try:
+            if pd.isna(value):
+                return ""
+        except (TypeError, ValueError):
+            pass
+        return str(value or "").strip()
+
     output: list[dict[str, str]] = []
-    seen: set[str] = set()
+    positions: dict[str, int] = {}
     for record in records:
         ticker = normalize_ticker(record.get("ticker"))
-        if not ticker or ticker in seen:
+        if not ticker:
             continue
-        seen.add(ticker)
-        output.append({
-            "ticker": ticker,
-            "company_name": str(record.get("company_name") or "").strip(),
-            "sector": str(record.get("sector") or "").strip(),
-        })
+        normalized = {
+            column: ticker if column == "ticker" else clean(record.get(column))
+            for column in UNIVERSE_METADATA_COLUMNS
+        }
+        if ticker in positions:
+            existing = output[positions[ticker]]
+            for column in UNIVERSE_METADATA_COLUMNS:
+                if column != "ticker" and not existing[column] and normalized[column]:
+                    existing[column] = normalized[column]
+            continue
+        positions[ticker] = len(output)
+        output.append(normalized)
     return output
 
 
 def universe_hash(universe: pd.DataFrame | Iterable[str] | list[dict[str, Any]]) -> str:
     if isinstance(universe, list) and (not universe or isinstance(universe[0], Mapping)):
-        tickers = [normalize_ticker(record.get("ticker")) for record in universe]
+        records = normalized_universe_records(pd.DataFrame(universe))
     elif isinstance(universe, pd.DataFrame):
-        tickers = [record["ticker"] for record in normalized_universe_records(universe)]
+        records = normalized_universe_records(universe)
     else:
-        tickers = [normalize_ticker(ticker) for ticker in universe]
-    canonical = "|".join(sorted(ticker for ticker in tickers if ticker))
+        records = normalized_universe_records(universe)
+    canonical = json.dumps(
+        sorted(records, key=lambda record: record["ticker"]),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return sha256(canonical.encode("utf-8")).hexdigest()
 
 

@@ -10,6 +10,29 @@ import pandas as pd
 from persistence import DatabaseConfig, _json_value, _post_payload_in_chunks, database_status, _request
 
 
+_NULLISH_DATE_TOKENS = {"", "<NA>", "NA", "N/A", "NAN", "NAT", "NONE", "NULL"}
+
+
+def _normalise_date(value: Any) -> str | None:
+    safe = _json_value(value)
+    if safe is None or (isinstance(safe, str) and safe.strip().upper() in _NULLISH_DATE_TOKENS):
+        return None
+    stamp = pd.to_datetime(safe, errors="coerce")
+    if pd.isna(stamp):
+        return None
+    return pd.Timestamp(stamp).date().isoformat()
+
+
+def _normalise_observed_at(value: Any) -> str | None:
+    safe = _json_value(value)
+    if safe is None or (isinstance(safe, str) and safe.strip().upper() in _NULLISH_DATE_TOKENS):
+        return None
+    stamp = pd.to_datetime(safe, errors="coerce", utc=True)
+    if pd.isna(stamp):
+        return None
+    return pd.Timestamp(stamp).isoformat()
+
+
 def _canon(record: Mapping[str, Any]) -> dict[str, Any]:
     return {str(k): _json_value(v) for k, v in record.items()}
 
@@ -26,7 +49,7 @@ def build_research_memory_rows(scan_id: str, events: pd.DataFrame | None, autono
             rec = _canon(row.to_dict())
             ticker = str(rec.get("ticker") or "")
             family = "NARRATIVE_EVENT"
-            period = rec.get("published_at") or rec.get("event_date")
+            period = _normalise_observed_at(rec.get("published_at") or rec.get("event_date"))
             content_hash = _digest(rec)
             rows.append({
                 "memory_id": _digest({"ticker": ticker, "family": family, "hash": content_hash}),
@@ -41,8 +64,9 @@ def build_research_memory_rows(scan_id: str, events: pd.DataFrame | None, autono
             rec = _canon(row.to_dict())
             ticker = str(rec.get("ticker") or "")
             family = str(rec.get("evidence_type") or "AUTONOMOUS_EVIDENCE")
-            period = (rec.get("fundamental_latest_period") if family == "PUBLIC_FUNDAMENTAL_PROXY" else rec.get("idx_official_period_end") if family == "IDX_OFFICIAL_FUNDAMENTAL" else None)
-            observed = rec.get("observed_at") or period
+            period_raw = (rec.get("fundamental_latest_period") if family == "PUBLIC_FUNDAMENTAL_PROXY" else rec.get("idx_official_period_end") if family == "IDX_OFFICIAL_FUNDAMENTAL" else None)
+            period = _normalise_date(period_raw)
+            observed = _normalise_observed_at(rec.get("observed_at")) or _normalise_observed_at(period)
             content_hash = _digest(rec)
             rows.append({
                 "memory_id": _digest({"ticker": ticker, "family": family, "period": period, "hash": content_hash}),

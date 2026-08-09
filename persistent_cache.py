@@ -23,7 +23,7 @@ from idx_official_fundamentals import fetch_many_idx_official_fundamentals
 from data_providers import fetch_many_news
 from research_memory import load_latest_research_memory
 
-CACHE_VERSION = "1.9.5"
+CACHE_VERSION = "1.9.6"
 FUNDAMENTAL_CACHE_SCHEMA_VERSION = "4"
 OHLCV_CACHE_TTL_HOURS = 12.0
 KSEI_CACHE_TTL_HOURS = 24.0
@@ -242,7 +242,7 @@ def build_source_cache_row(
         "provider": str(provider or ""),
         "status": str(status or ""),
         "checked_at": checked.isoformat(),
-        "valid_until": (checked + pd.Timedelta(hours=float(ttl_hours))).isoformat(),
+        "valid_until": (checked + pd.to_timedelta(float(ttl_hours), unit="h")).isoformat(),
         "latest_observed_at": _utc_timestamp(latest_observed_at).isoformat() if latest_observed_at is not None and pd.notna(latest_observed_at) else None,
         "last_scan_id": str(last_scan_id or ""),
         "content_sha256": _hash_payload(normalized_payload),
@@ -312,9 +312,9 @@ def _expected_completed_weekday(now: Any = None) -> pd.Timestamp:
     if current.weekday() < 5 and after_close:
         target = date
     else:
-        target = date - pd.Timedelta(days=1)
+        target = date - pd.to_timedelta(1, unit="D")
     while target.weekday() >= 5:
-        target -= pd.Timedelta(days=1)
+        target -= pd.to_timedelta(1, unit="D")
     return target
 
 
@@ -404,8 +404,8 @@ def fetch_ohlcv_cache_first(
 
     def refresh_one(item: tuple[str, pd.DataFrame, Mapping[str, Any]]) -> tuple[str, FetchResult, pd.DataFrame, Mapping[str, Any]]:
         symbol, cached, row = item
-        start = cached.index.max() - pd.Timedelta(days=14)
-        result = fetch_ohlcv_window(symbol, start=start, end=_utc_timestamp(now) + pd.Timedelta(days=2), completed_only=completed_only, now=now)
+        start = cached.index.max() - pd.to_timedelta(14, unit="D")
+        result = fetch_ohlcv_window(symbol, start=start, end=_utc_timestamp(now) + pd.to_timedelta(2, unit="D"), completed_only=completed_only, now=now)
         return symbol, result, cached, row
 
     if stale:

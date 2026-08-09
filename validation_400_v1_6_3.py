@@ -81,7 +81,7 @@ def main() -> None:
             events = pd.DataFrame([
                 {
                     "ticker": ticker,
-                    "published_at": pd.Timestamp(as_of, tz="Asia/Jakarta").tz_convert("UTC") - pd.Timedelta(days=3),
+                    "published_at": pd.Timestamp(as_of, tz="Asia/Jakarta").tz_convert("UTC") - pd.to_timedelta(3, unit="D"),
                     "title": "Issuer expansion project reaches commercial operation",
                     "summary": "Capacity and order book support revenue margin earnings and cash flow",
                     "publisher": "Issuer Investor Relations",
@@ -93,7 +93,7 @@ def main() -> None:
                 },
                 {
                     "ticker": ticker,
-                    "published_at": pd.Timestamp(as_of, tz="Asia/Jakarta").tz_convert("UTC") - pd.Timedelta(days=7),
+                    "published_at": pd.Timestamp(as_of, tz="Asia/Jakarta").tz_convert("UTC") - pd.to_timedelta(7, unit="D"),
                     "title": "Industry demand supports project ramp-up",
                     "summary": "Revenue and margin conversion expected from utilization",
                     "publisher": "Independent News",

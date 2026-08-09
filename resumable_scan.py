@@ -62,7 +62,37 @@ from scan_jobs import (
     update_scan_job,
 )
 
-PIPELINE_VERSION = "1.9.5-fundamental-freshness-ytd-consistency"
+PIPELINE_VERSION = "1.9.6-sector-aware-business-quality-calibration"
+
+
+def _research_memory_verified_exact(report: pd.DataFrame | None) -> bool:
+    return bool(
+        isinstance(report, pd.DataFrame)
+        and not report.empty
+        and str(report.iloc[0].get("state")) in {
+            "RESEARCH_MEMORY_VERIFIED_EXACT", "RESEARCH_MEMORY_VERIFIED_EMPTY",
+        }
+    )
+
+
+def _combined_persistence_state(
+    scan_state: str,
+    *,
+    database_ready: bool,
+    expected_research_memory: int,
+    research_memory_verification: pd.DataFrame | None,
+) -> str:
+    """Do not call a scan fully persisted when durable memory is incomplete."""
+    state = str(scan_state or "SCAN_COMPLETED_MEMORY_ONLY")
+    memory_exact = _research_memory_verified_exact(research_memory_verification)
+    if (
+        database_ready
+        and int(expected_research_memory or 0) > 0
+        and not memory_exact
+        and state == "SCAN_COMPLETED_FULL_PERSISTENCE"
+    ):
+        return "SCAN_COMPLETED_PARTIAL_PERSISTENCE"
+    return state
 
 
 def _json_safe(value: Any) -> Any:
@@ -795,7 +825,14 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
         outcomes=raw_outcomes,
         mode=str(settings.get("scan_mode") or "EMIR_AUTONOMOUS_HYBRID_400_TO_DEEP"),
     )
-    persistence_state = str(commit_report.iloc[0].get("state", "SCAN_COMPLETED_MEMORY_ONLY")) if not commit_report.empty else "SCAN_COMPLETED_MEMORY_ONLY"
+    scan_persistence_state = str(commit_report.iloc[0].get("state", "SCAN_COMPLETED_MEMORY_ONLY")) if not commit_report.empty else "SCAN_COMPLETED_MEMORY_ONLY"
+    memory_verified_exact = _research_memory_verified_exact(research_memory_verification)
+    persistence_state = _combined_persistence_state(
+        scan_persistence_state,
+        database_ready=config.ready,
+        expected_research_memory=len(research_memory_rows),
+        research_memory_verification=research_memory_verification,
+    )
     radar_row = write_report.loc[write_report.get("table", pd.Series(dtype=str)).eq("cak_radar_snapshots")] if not write_report.empty else pd.DataFrame()
     radar_persisted = bool(
         not radar_row.empty
@@ -820,11 +857,17 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
             "top3": top3_summary,
             "next_leaders": [{"rank": int(i+1), "ticker": str(r.get("ticker") or ""), "score": float(r.get("next_leader_score") or 0.0)} for i, r in next_leaders.reset_index(drop=True).iterrows()],
             "research_memory_rows": len(research_memory_rows),
-            "research_memory_verified_exact": bool(not research_memory_verification.empty and str(research_memory_verification.iloc[0].get("state")) in {"RESEARCH_MEMORY_VERIFIED_EXACT","RESEARCH_MEMORY_VERIFIED_EMPTY"}),
+            "research_memory_verified_exact": memory_verified_exact,
             "official_fundamental_verified": int(official_fundamental_frame.get("idx_official_source_verified", pd.Series(dtype=bool)).fillna(False).sum()) if not official_fundamental_frame.empty else 0,
             "radar_persisted": radar_persisted,
         },
-        "last_error": "" if terminal_status != "FINALIZE_RETRY_REQUIRED" else "Radar result was computed but not fully persisted; finalisation can be retried from cache.",
+        "last_error": (
+            "Radar result was computed but not fully persisted; finalisation can be retried from cache."
+            if terminal_status == "FINALIZE_RETRY_REQUIRED"
+            else "Research memory was not exact-count verified; analytical results are available but persistence is partial."
+            if config.ready and len(research_memory_rows) > 0 and not memory_verified_exact
+            else ""
+        ),
     })
     result = {
         "radar": radar,

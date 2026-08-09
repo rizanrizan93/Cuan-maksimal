@@ -259,7 +259,9 @@ def make_chart(frame: pd.DataFrame, row: pd.Series) -> go.Figure:
 
 def secrets_mapping() -> Any:
     try:
-        return st.secrets
+        # Accessing ``st.secrets`` itself is lazy and does not raise when no
+        # secrets file exists; converting it forces parsing inside this guard.
+        return dict(st.secrets)
     except Exception:
         return {}
 
@@ -467,13 +469,19 @@ def build_current_job_settings() -> dict[str, Any]:
 def start_new_scan_job(*, auto_continue: bool = True) -> None:
     as_of = pd.Timestamp.now(tz="Asia/Jakarta")
     scan_id = make_scan_id(as_of, tickers)
-    create_scan_job(
-        db_config,
-        scan_id=scan_id,
-        universe=universe,
-        settings=build_current_job_settings(),
-        chunk_size=chunk_size,
-    )
+    try:
+        create_scan_job(
+            db_config,
+            scan_id=scan_id,
+            universe=universe,
+            settings=build_current_job_settings(),
+            chunk_size=chunk_size,
+        )
+    except Exception as exc:
+        st.session_state["emir_auto_continue"] = False
+        st.error("Job scan belum berhasil dibuat di Supabase. Tidak ada checkpoint yang dihapus; silakan uji koneksi lalu coba lagi.")
+        st.caption(f"Detail database: {exc}")
+        return
     st.session_state["emir_active_scan_id"] = scan_id
     st.session_state["emir_auto_continue"] = bool(auto_continue)
     st.session_state.pop("emir_scan", None)
@@ -533,8 +541,14 @@ if active_job:
 
     should_process = resume_clicked or bool(st.session_state.get("emir_auto_continue", False))
     if should_process and str(active_job.get("status")) in ACTIVE_JOB_STATUSES:
-        with st.spinner(f"Memproses checkpoint {active_job.get('current_stage')}..."):
-            updated_job, step_report, step_result = process_next_job_step(db_config, active_job)
+        try:
+            with st.spinner(f"Memproses checkpoint {active_job.get('current_stage')}..."):
+                updated_job, step_report, step_result = process_next_job_step(db_config, active_job)
+        except Exception as exc:
+            st.session_state["emir_auto_continue"] = False
+            st.error("Checkpoint berhenti aman. Progress yang sudah committed tetap dapat dilanjutkan.")
+            st.caption(f"Detail checkpoint: {exc}")
+            st.stop()
         active_job = updated_job
         st.session_state["emir_active_scan_id"] = str(updated_job.get("scan_id"))
         if step_result:
@@ -642,7 +656,7 @@ tabs = st.tabs([
 
 with tab_leader:
     st.caption("The Next Leader memisahkan kualitas bisnis/future fundamental dari timing entry. Saham markup tetap boleh menjadi leader, tetapi execution dapat WAIT_REACCUMULATION.")
-    leader_cols = ["next_leader_rank", "ticker", "company_name", "sector", "next_leader_score", "next_leader_state", "fundamental_conversion_score", "fundamental_data_quality_score", "fundamental_cashflow_state", "fundamental_leverage_risk_state", "story_runway_score", "financial_conversion_score", "sector_rrg_state", "sector_leadership_score", "smart_money_score", "emir_decision_state", "action"]
+    leader_cols = ["next_leader_rank", "ticker", "company_name", "sector", "next_leader_score", "next_leader_state", "fundamental_conversion_score", "fundamental_data_quality_score", "fundamental_cashflow_state", "fundamental_leverage_risk_state", "story_runway_score", "financial_conversion_score", "next_leader_business_momentum_score", "next_leader_business_quality_adjustment", "next_leader_sector_model_state", "next_leader_quality_flags", "sector_rrg_state", "sector_leadership_score", "smart_money_score", "emir_decision_state", "action"]
     if next_leaders.empty:
         fund_scores = pd.to_numeric(radar.get("fundamental_conversion_score", pd.Series(index=radar.index, dtype=float)), errors="coerce")
         fund_cov = pd.to_numeric(radar.get("fundamental_coverage_pct", pd.Series(index=radar.index, dtype=float)), errors="coerce")
@@ -654,7 +668,7 @@ with tab_leader:
         )
     else:
         st.dataframe(next_leaders[[c for c in leader_cols if c in next_leaders.columns]], width="stretch", hide_index=True)
-        st.download_button("Download The Next Leader CSV", next_leaders.to_csv(index=False).encode("utf-8"), "idx_emir_next_leader_v1_9_5.csv", "text/csv")
+        st.download_button("Download The Next Leader CSV", next_leaders.to_csv(index=False).encode("utf-8"), "idx_emir_next_leader_v1_9_6.csv", "text/csv")
 
 with tab_top3:
     if st.button("🔄 Scan Ulang dari Dashboard", type="primary", key="top3_dashboard_rescan", width="stretch"):
@@ -678,13 +692,13 @@ with tab_top3:
         dl1.download_button(
             "Download Top 3 report HTML",
             download_html.encode("utf-8"),
-            "idx_emir_execution_research_top3_v1_9_5.html",
+            "idx_emir_execution_research_top3_v1_9_6.html",
             "text/html",
         )
         dl2.download_button(
             "Download Top 3 data CSV",
             top3.to_csv(index=False).encode("utf-8"),
-            "idx_emir_execution_research_top3_v1_9_5.csv",
+            "idx_emir_execution_research_top3_v1_9_6.csv",
             "text/csv",
         )
 
@@ -700,7 +714,7 @@ with tab_radar:
     st.download_button(
         "Download Emir radar CSV",
         radar.to_csv(index=False).encode("utf-8"),
-        "idx_emir_autonomous_radar_v1_9_5.csv",
+        "idx_emir_autonomous_radar_v1_9_6.csv",
         "text/csv",
     )
 
@@ -805,7 +819,7 @@ with tab_real_money:
         st.download_button(
             "Download Real Money Candidate Top 3 CSV",
             real_money_top3.to_csv(index=False).encode("utf-8"),
-            "idx_emir_real_money_top3_v1_9_5.csv",
+            "idx_emir_real_money_top3_v1_9_6.csv",
             "text/csv",
         )
     st.divider()
@@ -825,7 +839,7 @@ with tab_real_money:
         ascending = [False, False, False, False][:len(sort_cols)]
         rm = rm.sort_values(sort_cols, ascending=ascending, na_position="last")
     st.dataframe(rm, width="stretch", hide_index=True)
-    st.download_button("Download Real Money Gate CSV", rm.to_csv(index=False).encode("utf-8"), "idx_emir_real_money_gate_v1_9_5.csv", "text/csv")
+    st.download_button("Download Real Money Gate CSV", rm.to_csv(index=False).encode("utf-8"), "idx_emir_real_money_gate_v1_9_6.csv", "text/csv")
 
 with tab_scenario:
     columns = [
@@ -903,7 +917,7 @@ with tab_formula:
     st.download_button(
         "Download formula registry CSV",
         registry.to_csv(index=False).encode("utf-8"),
-        "idx_emir_autonomous_formula_registry_v1_9_5.csv",
+        "idx_emir_autonomous_formula_registry_v1_9_7.csv",
         "text/csv",
     )
     st.info(
@@ -928,7 +942,7 @@ with tab_database:
             local=frame.copy(); local.insert(0,"audit_group",label); db_health_parts.append(local)
     if db_health_parts:
         db_health=pd.concat(db_health_parts,ignore_index=True,sort=False)
-        st.download_button("Download database health v1.9.5", db_health.to_csv(index=False).encode("utf-8"), "idx_emir_database_health_v1_9_5.csv", "text/csv")
+        st.download_button("Download database health v1.9.8", db_health.to_csv(index=False).encode("utf-8"), "idx_emir_database_health_v1_9_8.csv", "text/csv")
     st.subheader("Persistent source-cache commit")
     st.dataframe(result.get("cache_write_report", pd.DataFrame()), width="stretch", hide_index=True)
     st.subheader("Persistent source-cache hash readback")
@@ -946,7 +960,7 @@ with tab_database:
         st.download_button(
             "Download database readback audit",
             verification.to_csv(index=False).encode("utf-8"),
-            "emir_database_readback_v8_v1_9_5.csv",
+            "emir_database_readback_v8_v1_9_7.csv",
             "text/csv",
         )
     if st.button("Verifikasi ulang scan committed", key="reverify_committed_scan"):
