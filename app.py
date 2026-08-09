@@ -942,7 +942,7 @@ with tab_database:
             local=frame.copy(); local.insert(0,"audit_group",label); db_health_parts.append(local)
     if db_health_parts:
         db_health=pd.concat(db_health_parts,ignore_index=True,sort=False)
-        st.download_button("Download database health v1.9.8", db_health.to_csv(index=False).encode("utf-8"), "idx_emir_database_health_v1_9_8.csv", "text/csv")
+        st.download_button("Download database health v1.9.9", db_health.to_csv(index=False).encode("utf-8"), "idx_emir_database_health_v1_9_9.csv", "text/csv")
     st.subheader("Persistent source-cache commit")
     st.dataframe(result.get("cache_write_report", pd.DataFrame()), width="stretch", hide_index=True)
     st.subheader("Persistent source-cache hash readback")

@@ -17,9 +17,15 @@ import requests
 
 from data_providers import USER_AGENT, bare_ticker, normalize_ticker
 
-IDX_STATIC_BASE = (
-    "https://www.idx.co.id/Portals/0/StaticData/ListedCompanies/Corporate_Actions/"
-    "New_Info_JSX/Jenis_Informasi/01_Laporan_Keuangan/02_Soft_Copy_Laporan_Keuangan"
+IDX_STATIC_BASES = (
+    (
+        "https://www.idx.id/Portals/0/StaticData/ListedCompanies/Corporate_Actions/"
+        "New_Info_JSX/Jenis_Informasi/01_Laporan_Keuangan/02_Soft_Copy_Laporan_Keuangan"
+    ),
+    (
+        "https://www.idx.co.id/Portals/0/StaticData/ListedCompanies/Corporate_Actions/"
+        "New_Info_JSX/Jenis_Informasi/01_Laporan_Keuangan/02_Soft_Copy_Laporan_Keuangan"
+    ),
 )
 IDX_FINANCIAL_PORTAL = "https://idx.id/en/listed-companies/financial-statements-and-annual-report"
 
@@ -40,12 +46,19 @@ def _clip(value: Any, low: float = 0.0, high: float = 100.0) -> float:
 
 
 def idx_instance_url(ticker: str, year: int, period: str) -> str:
+    return idx_instance_urls(ticker, year, period)[0]
+
+
+def idx_instance_urls(ticker: str, year: int, period: str) -> list[str]:
     symbol = bare_ticker(ticker)
     label = str(period).upper()
-    return (
-        f"{IDX_STATIC_BASE}//Laporan%20Keuangan%20Tahun%20{int(year)}/"
-        f"{label}/{quote(symbol)}/instance.zip"
-    )
+    return [
+        (
+            f"{base}//Laporan%20Keuangan%20Tahun%20{int(year)}/"
+            f"{label}/{quote(symbol)}/instance.zip"
+        )
+        for base in IDX_STATIC_BASES
+    ]
 
 
 def candidate_reporting_periods(now: Any = None, *, max_candidates: int = 5) -> list[tuple[int, str]]:
@@ -330,46 +343,47 @@ def fetch_idx_official_fundamental(
     symbol = normalize_ticker(ticker)
     errors: list[str] = []
     for year, period in candidate_reporting_periods(now, max_candidates=max_candidates):
-        url = idx_instance_url(symbol, year, period)
-        for attempt in range(max(1, int(retries))):
-            try:
-                response = requests.get(
-                    url,
-                    headers={
-                        "User-Agent": USER_AGENT,
-                        "Accept": "application/zip,application/octet-stream,*/*",
-                        "Accept-Language": "id-ID,id;q=0.9,en;q=0.7",
-                        "Referer": IDX_FINANCIAL_PORTAL,
-                    },
-                    timeout=timeout,
-                )
-                if response.status_code in {403, 404}:
-                    errors.append(f"{year}-{period}:{response.status_code}")
+        for url in idx_instance_urls(symbol, year, period):
+            host = "idx.id" if "www.idx.id" in url else "idx.co.id"
+            for attempt in range(max(1, int(retries))):
+                try:
+                    response = requests.get(
+                        url,
+                        headers={
+                            "User-Agent": USER_AGENT,
+                            "Accept": "application/zip,application/octet-stream,*/*",
+                            "Accept-Language": "id-ID,id;q=0.9,en;q=0.7",
+                            "Referer": IDX_FINANCIAL_PORTAL,
+                        },
+                        timeout=timeout,
+                    )
+                    if response.status_code in {403, 404}:
+                        errors.append(f"{year}-{period}@{host}:{response.status_code}")
+                        break
+                    if response.status_code == 429 and attempt + 1 < retries:
+                        time.sleep(min(5.0, 0.8 * (2 ** attempt) + random.uniform(0.1, 0.4)))
+                        continue
+                    response.raise_for_status()
+                    xml_bytes = _extract_instance_bytes(response.content)
+                    snapshot = parse_idx_xbrl_instance(symbol, xml_bytes, source_url=url, period_label=period)
+                    coverage = _finite(snapshot.get("idx_official_coverage_pct"), 0)
+                    status = "OK" if coverage >= 50 else "PARTIAL"
+                    return snapshot, {
+                        "ticker": symbol,
+                        "provider": "IDX_OFFICIAL_XBRL",
+                        "status": status,
+                        "items": 1,
+                        "detail": f"period={year}-{period}; coverage={coverage:.1f}; source=IDX instance.zip",
+                        "source_url": url,
+                        "source_verified": True,
+                    }
+                except Exception as exc:
+                    errors.append(f"{year}-{period}@{host}:{type(exc).__name__}")
+                    retryable = any(token in str(exc) for token in ("429", "500", "502", "503", "504", "timed out", "Timeout"))
+                    if attempt + 1 < retries and retryable:
+                        time.sleep(min(5.0, 0.8 * (2 ** attempt) + random.uniform(0.1, 0.4)))
+                        continue
                     break
-                if response.status_code == 429 and attempt + 1 < retries:
-                    time.sleep(min(5.0, 0.8 * (2 ** attempt) + random.uniform(0.1, 0.4)))
-                    continue
-                response.raise_for_status()
-                xml_bytes = _extract_instance_bytes(response.content)
-                snapshot = parse_idx_xbrl_instance(symbol, xml_bytes, source_url=url, period_label=period)
-                coverage = _finite(snapshot.get("idx_official_coverage_pct"), 0)
-                status = "OK" if coverage >= 50 else "PARTIAL"
-                return snapshot, {
-                    "ticker": symbol,
-                    "provider": "IDX_OFFICIAL_XBRL",
-                    "status": status,
-                    "items": 1,
-                    "detail": f"period={year}-{period}; coverage={coverage:.1f}; source=IDX instance.zip",
-                    "source_url": url,
-                    "source_verified": True,
-                }
-            except Exception as exc:
-                errors.append(f"{year}-{period}:{type(exc).__name__}")
-                retryable = any(token in str(exc) for token in ("429", "500", "502", "503", "504", "timed out", "Timeout"))
-                if attempt + 1 < retries and retryable:
-                    time.sleep(min(5.0, 0.8 * (2 ** attempt) + random.uniform(0.1, 0.4)))
-                    continue
-                break
     return {
         "ticker": symbol,
         "idx_official_source_verified": False,
@@ -400,6 +414,6 @@ def fetch_many_idx_official_fundamentals(tickers: Iterable[str], *, now: Any = N
 
 
 __all__ = [
-    "IDX_FINANCIAL_PORTAL", "candidate_reporting_periods", "idx_instance_url",
+    "IDX_FINANCIAL_PORTAL", "candidate_reporting_periods", "idx_instance_url", "idx_instance_urls",
     "parse_idx_xbrl_instance", "fetch_idx_official_fundamental", "fetch_many_idx_official_fundamentals",
 ]

@@ -7,6 +7,7 @@ import re
 import time
 import random
 import threading
+from urllib.parse import urlparse
 
 import numpy as np
 import pandas as pd
@@ -22,9 +23,22 @@ except Exception:  # pragma: no cover
     yf = None
 
 KSEI_PROFILE_URL = "https://web.ksei.co.id/services/registered-securities/shares/lc/{ticker}?setLocale=en-US"
+_REGULATOR_DOMAINS = ("idx.id", "idx.co.id", "ojk.go.id", "ksei.co.id")
 _AUTONOMOUS_RATE_LOCK = threading.Lock()
 _AUTONOMOUS_LAST_REQUEST_AT = 0.0
 _AUTONOMOUS_MIN_INTERVAL_SECONDS = 0.16
+
+
+def _is_https_regulator_url(value: Any) -> bool:
+    try:
+        parsed = urlparse(str(value or "").strip())
+    except ValueError:
+        return False
+    host = str(parsed.hostname or "").lower().rstrip(".")
+    return bool(
+        parsed.scheme.lower() == "https"
+        and any(host == domain or host.endswith("." + domain) for domain in _REGULATOR_DOMAINS)
+    )
 
 
 def _pace_autonomous_request() -> None:
@@ -563,10 +577,10 @@ def apply_regulatory_event_overlay(
         media_alert = False
         for _, row in group.iterrows():
             text = " ".join(str(row.get(key) or "") for key in ("title", "summary", "publisher", "url")).lower()
-            url = str(row.get("url") or "").lower()
             publisher = str(row.get("publisher") or "").lower()
             verified = str(row.get("source_verified", False)).strip().lower() in {"1", "true", "yes", "verified"}
-            regulator = verified or any(domain in url for domain in ("idx.co.id", "ojk.go.id", "ksei.co.id")) or publisher in {"bursa efek indonesia", "indonesia stock exchange", "ojk", "ksei"}
+            publisher_claim = publisher in {"bursa efek indonesia", "indonesia stock exchange", "ojk", "ksei"}
+            regulator = verified or _is_https_regulator_url(row.get("url")) or (publisher_claim and verified)
             suspension = bool(re.search(r"\bsuspensi|suspension|suspended", text))
             special = bool(re.search(r"pemantauan khusus|special monitoring|full call auction|\bfca\b", text))
             hsc = bool(re.search(r"high shareholding concentration|konsentrasi kepemilikan tinggi|\bhsc\b", text))
@@ -910,6 +924,146 @@ def _leverage_risk_state(interest_debt_to_equity: float, liabilities_to_equity: 
     if (np.isfinite(ide) and ide >= 0.5) or (np.isfinite(lte) and lte >= 1.5):
         return "MODERATE_LEVERAGE", 82.0
     return "BALANCE_SHEET_CAPACITY_OK", 100.0
+
+
+def recalibrate_cached_fundamental_snapshot(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Recalculate coverage after database-first, field-level reconciliation.
+
+    This is deliberately source-agnostic: it only scores finite fields already
+    present in the payload.  It does not mark proxy history as official, invent
+    periods, or replace a direct IDX reconciliation state.
+    """
+    result = dict(payload or {})
+    if not result:
+        return result
+
+    revenue = _finite(result.get("revenue_ttm"), _finite(result.get("revenue_latest"), np.nan))
+    net_income = _finite(result.get("net_income_ttm"), _finite(result.get("net_income_latest"), np.nan))
+    ocf = _finite(result.get("operating_cash_flow_ttm"), _finite(result.get("operating_cash_flow_latest"), np.nan))
+    fcf = _finite(result.get("free_cash_flow_proxy_ttm"), _finite(result.get("free_cash_flow_proxy_latest"), np.nan))
+    equity = _finite(result.get("equity_latest"), np.nan)
+    debt = _finite(result.get("debt_latest"), np.nan)
+    liabilities = _finite(result.get("total_liabilities_latest"), np.nan)
+    assets = _finite(result.get("total_assets_latest"), np.nan)
+    cash = _finite(result.get("cash_latest"), np.nan)
+    current_assets = _finite(result.get("current_assets_latest"), np.nan)
+    current_liabilities = _finite(result.get("current_liabilities_latest"), np.nan)
+
+    net_margin = _finite(result.get("net_margin_ttm_pct"), np.nan)
+    if not np.isfinite(net_margin) and np.isfinite(net_income) and np.isfinite(revenue) and revenue != 0:
+        net_margin = 100.0 * net_income / revenue
+        result["net_margin_ttm_pct"] = round(net_margin, 2)
+    roe = _finite(result.get("roe_ttm_pct"), np.nan)
+    if not np.isfinite(roe) and np.isfinite(net_income) and np.isfinite(equity) and equity != 0:
+        roe = 100.0 * net_income / equity
+        result["roe_ttm_pct"] = round(roe, 2)
+    roa = _finite(result.get("roa_ttm_pct"), np.nan)
+    if not np.isfinite(roa) and np.isfinite(net_income) and np.isfinite(assets) and assets != 0:
+        roa = 100.0 * net_income / assets
+        result["roa_ttm_pct"] = round(roa, 2)
+    ide = _finite(result.get("interest_bearing_debt_to_equity"), np.nan)
+    if not np.isfinite(ide) and np.isfinite(debt) and np.isfinite(equity) and equity != 0:
+        ide = debt / equity
+        result["interest_bearing_debt_to_equity"] = round(ide, 3)
+        result["der_ratio"] = round(ide, 3)
+    lte = _finite(result.get("total_liabilities_to_equity"), np.nan)
+    if not np.isfinite(lte) and np.isfinite(liabilities) and np.isfinite(equity) and equity != 0:
+        lte = liabilities / equity
+        result["total_liabilities_to_equity"] = round(lte, 3)
+    current_ratio = _finite(result.get("current_ratio"), np.nan)
+    if not np.isfinite(current_ratio) and np.isfinite(current_assets) and np.isfinite(current_liabilities) and current_liabilities != 0:
+        current_ratio = current_assets / current_liabilities
+        result["current_ratio"] = round(current_ratio, 3)
+    cash_to_debt = _finite(result.get("cash_to_debt_ratio"), np.nan)
+    if not np.isfinite(cash_to_debt) and np.isfinite(cash) and np.isfinite(debt) and debt > 0:
+        cash_to_debt = cash / debt
+        result["cash_to_debt_ratio"] = round(cash_to_debt, 3)
+    ocf_conversion = _finite(result.get("ocf_conversion_ratio"), np.nan)
+    if not np.isfinite(ocf_conversion) and np.isfinite(ocf) and np.isfinite(net_income) and net_income != 0:
+        ocf_conversion = ocf / net_income
+        result["ocf_conversion_ratio"] = round(ocf_conversion, 3)
+
+    cashflow_state = (
+        "OCF_FCF_TTM_AVAILABLE" if np.isfinite(ocf) and np.isfinite(fcf)
+        else "OCF_TTM_AVAILABLE_FCF_MISSING" if np.isfinite(ocf)
+        else str(result.get("fundamental_cashflow_state") or "CASHFLOW_TTM_MISSING")
+    )
+    result["fundamental_cashflow_state"] = cashflow_state
+    cashflow_quality = 100.0 if cashflow_state == "OCF_FCF_TTM_AVAILABLE" else 72.0 if "OCF_TTM_AVAILABLE" in cashflow_state else 20.0
+
+    revenue_growth = _finite(result.get("revenue_growth_pct"), np.nan)
+    earnings_growth = _finite(result.get("earnings_growth_pct"), np.nan)
+    critical = [revenue_growth, earnings_growth, net_margin, ide, lte, ocf_conversion, fcf, roe]
+    critical_completeness = 100.0 * sum(np.isfinite(value) for value in critical) / len(critical)
+    statement_values = [
+        result.get("revenue_latest"), revenue, result.get("net_income_latest"), net_income,
+        equity, debt, cash, result.get("operating_cash_flow_latest"), ocf, fcf,
+        liabilities, assets, current_assets, current_liabilities,
+    ]
+    statement_availability = 100.0 * sum(np.isfinite(_finite(value, np.nan)) for value in statement_values) / len(statement_values)
+    basis_quality = 100.0 if str(result.get("growth_basis_state") or "").upper() in {"YOY_PRIMARY", "IDX_OFFICIAL_YOY_PRIMARY"} else 55.0
+    alignment_state = str(result.get("fundamental_period_alignment_state") or "").upper()
+    alignment_quality = 100.0 if "ALIGNED" in alignment_state else 70.0 if "PARTIAL" in alignment_state else 45.0
+    freshness_state = str(result.get("fundamental_period_freshness_state") or "").upper()
+    freshness_quality = 100.0 if freshness_state in {"CURRENT_QUARTERLY_PERIOD", "CURRENT"} else 75.0 if freshness_state == "AGING_QUARTERLY_PERIOD" else 35.0
+    consistency_quality = _finite(result.get("fundamental_growth_consistency_score"), 55.0)
+    recalculated_coverage = (
+        0.32 * critical_completeness + 0.21 * statement_availability + 0.13 * basis_quality
+        + 0.12 * alignment_quality + 0.10 * freshness_quality + 0.07 * cashflow_quality
+        + 0.05 * consistency_quality
+    )
+    recalculated_quality = _clip(
+        0.25 * critical_completeness + 0.17 * statement_availability + 0.15 * alignment_quality
+        + 0.13 * freshness_quality + 0.13 * cashflow_quality
+        + 0.09 * _finite(result.get("fundamental_growth_quality_score"), 55.0)
+        + 0.08 * consistency_quality
+    )
+    result["fundamental_critical_metric_completeness_pct"] = round(critical_completeness, 1)
+    result["fundamental_statement_availability_pct"] = round(statement_availability, 1)
+    result["fundamental_coverage_pct"] = round(max(
+        _finite(result.get("fundamental_coverage_pct"), 0.0), recalculated_coverage
+    ), 1)
+    result["fundamental_data_quality_score"] = round(max(
+        _finite(result.get("fundamental_data_quality_score"), 0.0), recalculated_quality
+    ), 1)
+
+    leverage_state, leverage_cap = _leverage_risk_state(ide, lte, cash_to_debt)
+    result["fundamental_leverage_risk_state"] = leverage_state
+    profitability = _weighted_mean_available([
+        (_clip(45 + 1.5 * net_margin) if np.isfinite(net_margin) else np.nan, 0.35),
+        (_clip(45 + roe) if np.isfinite(roe) else np.nan, 0.40),
+        (_clip(45 + 1.3 * roa) if np.isfinite(roa) else np.nan, 0.25),
+    ])
+    cash_quality = _weighted_mean_available([
+        (_clip(55 + 22 * ocf_conversion) if np.isfinite(ocf_conversion) else np.nan, 0.55),
+        (80.0 if np.isfinite(fcf) and fcf > 0 else 35.0 if np.isfinite(fcf) else np.nan, 0.45),
+    ])
+    solvency = _weighted_mean_available([
+        (_clip(88 - 30 * max(0, ide - 0.35)) if np.isfinite(ide) else np.nan, 0.55),
+        (_clip(90 - 28 * max(0, lte - 0.70)) if np.isfinite(lte) else np.nan, 0.45),
+    ])
+    raw_score = _weighted_mean_available([
+        (_clip(50 + revenue_growth) if np.isfinite(revenue_growth) else np.nan, 0.18),
+        (_clip(50 + 0.8 * earnings_growth) if np.isfinite(earnings_growth) else np.nan, 0.18),
+        (profitability, 0.22), (cash_quality, 0.22), (solvency, 0.20),
+    ])
+    score_cap = min(_finite(result.get("fundamental_score_cap"), 88.0), leverage_cap)
+    if not np.isfinite(ocf):
+        score_cap = min(score_cap, 76.0)
+    if np.isfinite(raw_score):
+        result["fundamental_raw_score"] = round(raw_score, 1)
+        result["fundamental_conversion_score"] = round(min(raw_score, score_cap), 1)
+    result["fundamental_score_cap"] = round(score_cap, 1)
+    score = _finite(result.get("fundamental_conversion_score"), np.nan)
+    coverage = _finite(result.get("fundamental_coverage_pct"), 0.0)
+    result["fundamental_state"] = (
+        "FUNDAMENTAL_INCOMPLETE" if coverage < 35 or not np.isfinite(score)
+        else "FUTURE_FUNDAMENTAL_SUPPORTIVE" if score >= 68 and critical_completeness >= 62.5
+        else "FUNDAMENTAL_MIXED" if score >= 48 else "FUNDAMENTAL_WEAK"
+    )
+    result["fundamental_cache_schema_version"] = "4"
+    result["fundamental_database_enrichment_state"] = "DATABASE_FIRST_FIELD_LEVEL_RECONCILIATION"
+    return result
 
 def fetch_yfinance_fundamental_snapshot(ticker: str) -> tuple[dict[str, Any], dict[str, Any]]:
     symbol = normalize_ticker(ticker)
@@ -1377,6 +1531,6 @@ def autonomous_evidence_frame(
 
 __all__ = [
     "apply_regulatory_event_overlay", "autonomous_evidence_frame", "build_broker_inventory_proxy", "build_orderbook_proxy",
-    "fetch_many_fundamentals", "fetch_many_ksei_profiles", "fetch_yfinance_fundamental_snapshot", "reconcile_fundamental_snapshot", "apply_cross_sectional_fundamental_freshness",
+    "fetch_many_fundamentals", "fetch_many_ksei_profiles", "fetch_yfinance_fundamental_snapshot", "recalibrate_cached_fundamental_snapshot", "reconcile_fundamental_snapshot", "apply_cross_sectional_fundamental_freshness",
     "ksei_actions_to_events", "ksei_profiles_to_maps", "parse_ksei_profile_html",
 ]

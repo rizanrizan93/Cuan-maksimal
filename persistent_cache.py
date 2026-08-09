@@ -18,7 +18,11 @@ from data_providers import (
     normalize_ticker,
     _sanitize_ohlcv,
 )
-from autonomous_enrichment import fetch_many_fundamentals, fetch_many_ksei_profiles
+from autonomous_enrichment import (
+    fetch_many_fundamentals,
+    fetch_many_ksei_profiles,
+    recalibrate_cached_fundamental_snapshot,
+)
 from idx_official_fundamentals import fetch_many_idx_official_fundamentals
 from data_providers import fetch_many_news
 from research_memory import load_latest_research_memory
@@ -528,7 +532,7 @@ def fetch_fundamental_cache_first(
             audits.append({"ticker": symbol, "provider": "SUPABASE_FUNDAMENTAL_CACHE", "status": "CACHE_SCHEMA_MISMATCH_REFRESH", "items": 0, "detail": "Fundamental cache schema is stale; provider refresh required.", "cache_state": "CACHE_SCHEMA_MISMATCH"})
         if row and not force_refresh and _source_row_fresh(row, now):
             if payload:
-                snapshots.append(payload)
+                snapshots.append(recalibrate_cached_fundamental_snapshot(payload))
             audits.append({"ticker": symbol, "provider": "SUPABASE_FUNDAMENTAL_CACHE", "status": "CACHE_HIT", "items": int(bool(payload)), "detail": f"age_hours={_cache_age_hours(row, now):.2f}; schema={FUNDAMENTAL_CACHE_SCHEMA_VERSION}", "cache_state": "CACHE_HIT"})
         else:
             refresh.append(symbol)
@@ -540,20 +544,21 @@ def fetch_fundamental_cache_first(
         for symbol in refresh:
             payload, audit = fmap.get(symbol, {}), amap.get(symbol, {})
             if payload and str(payload.get("fundamental_provenance_state")) != "PROVIDER_FAILED":
+                payload = recalibrate_cached_fundamental_snapshot(payload)
                 snapshots.append({"ticker": symbol, **payload})
                 audits.append({**audit, "ticker": symbol, "status": "COLD_REFRESH" if symbol not in cached else "REFRESHED", "cache_state": "COLD_REFRESH" if symbol not in cached else "REFRESHED"})
                 writes.append(build_source_cache_row(symbol, "FUNDAMENTAL", {"ticker": symbol, **payload}, provider=str(audit.get("provider") or "YFINANCE_FUNDAMENTALS"), status=str(audit.get("status") or "OK"), checked_at=now, ttl_hours=FUNDAMENTAL_CACHE_TTL_HOURS, last_scan_id=last_scan_id))
             elif symbol in cached:
                 row = cached[symbol]; old = row.get("payload") if isinstance(row.get("payload"), dict) else {}
                 if _cache_age_hours(row, now) / 24.0 <= STALE_SOURCE_FALLBACK_DAYS and old:
-                    snapshots.append(old)
+                    snapshots.append(recalibrate_cached_fundamental_snapshot(old))
                     audits.append({**audit, "ticker": symbol, "provider": "SUPABASE_FUNDAMENTAL_CACHE", "status": "STALE_CACHE_FALLBACK", "items": 1, "detail": f"refresh={audit.get('detail','')}", "cache_state": "STALE_CACHE_FALLBACK"})
                 else:
                     audits.append({**audit, "ticker": symbol, "status": "CACHE_STALE_PROVIDER_FAILED", "cache_state": "CACHE_STALE_PROVIDER_FAILED"})
             else:
                 remembered = (memory.get(symbol) or [{}])[0].get("payload") if memory.get(symbol) else {}
                 if isinstance(remembered, dict) and _fundamental_payload_compatible(remembered):
-                    snapshots.append({"ticker": symbol, **remembered})
+                    snapshots.append({"ticker": symbol, **recalibrate_cached_fundamental_snapshot(remembered)})
                     audits.append({**audit, "ticker": symbol, "provider": "SUPABASE_RESEARCH_MEMORY", "status": "RESEARCH_MEMORY_FALLBACK", "items": 1, "detail": "Live fundamental provider/cache unavailable; reused latest compatible durable research memory.", "cache_state": "RESEARCH_MEMORY_FALLBACK"})
                 else:
                     audits.append({**audit, "ticker": symbol, "status": str(audit.get("status") or "ERROR"), "cache_state": "CACHE_MISS_PROVIDER_FAILED"})
@@ -745,14 +750,14 @@ def load_cached_fundamentals(
         if not row or not _row_hash_valid(row):
             remembered = (memory.get(symbol) or [{}])[0].get("payload") if memory.get(symbol) else {}
             if isinstance(remembered, dict) and _fundamental_payload_compatible(remembered):
-                snapshots.append({"ticker": symbol, **remembered})
+                snapshots.append({"ticker": symbol, **recalibrate_cached_fundamental_snapshot(remembered)})
                 audits.append({"ticker": symbol, "provider": "SUPABASE_RESEARCH_MEMORY", "status": "RESEARCH_MEMORY_LOAD", "items": 1, "detail": "Source cache unavailable; durable compatible fundamental memory loaded.", "cache_state": "RESEARCH_MEMORY_LOAD"})
             else:
                 audits.append({"ticker": symbol, "provider": "SUPABASE_FUNDAMENTAL_CACHE", "status": "CACHE_MISS_OR_HASH_INVALID", "items": 0, "detail": "Read-only resumable load.", "cache_state": "CACHE_MISS"})
             continue
         payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
         if payload and _fundamental_payload_compatible(payload):
-            snapshots.append({"ticker": symbol, **payload})
+            snapshots.append({"ticker": symbol, **recalibrate_cached_fundamental_snapshot(payload)})
             audits.append({"ticker": symbol, "provider": "SUPABASE_FUNDAMENTAL_CACHE", "status": "CACHE_LOAD", "items": 1, "detail": f"Read-only resumable load; schema={FUNDAMENTAL_CACHE_SCHEMA_VERSION}.", "cache_state": "CACHE_LOAD"})
         else:
             audits.append({"ticker": symbol, "provider": "SUPABASE_FUNDAMENTAL_CACHE", "status": "CACHE_SCHEMA_MISMATCH", "items": 0, "detail": "Stale fundamental payload rejected during finalisation.", "cache_state": "CACHE_SCHEMA_MISMATCH"})

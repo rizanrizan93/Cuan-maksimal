@@ -4,6 +4,7 @@ from typing import Any, Mapping
 import hashlib
 import math
 import re
+from urllib.parse import urlparse
 
 import numpy as np
 import pandas as pd
@@ -11,7 +12,7 @@ import pandas as pd
 from data_providers import normalize_ticker
 
 
-ENGINE_VERSION = "1.9.8-persistence-integrity"
+ENGINE_VERSION = "1.9.9-evidence-integrity"
 FRAMEWORK_DISCLAIMER = "PUBLIC_CLEAN_ROOM_RECONSTRUCTION_NOT_AFFILIATED_NOT_PROPRIETARY"
 
 # The registry separates what Emir has stated publicly from our own quantitative proxy.
@@ -255,7 +256,7 @@ PUBLIC_FORMULA_REGISTRY: tuple[dict[str, str], ...] = (
         "formula_id": "EP40_FUNDAMENTAL_FRESHNESS_YTD_CONSISTENCY",
         "provenance_class": "EMPIRICAL_PROXY",
         "public_basis": "A strong latest quarter is more reliable when the cumulative/YTD business trend confirms it; stale relative reporting periods should not rank like current evidence.",
-        "scanner_implementation": "v1.9.8 preserves the frozen v1.9.6 sector-aware business-quality calibration and the v1.9.7 universe contract; this release repairs typed-date persistence and truthful durability status only, not scoring weights.",
+        "scanner_implementation": "v1.9.9 preserves the frozen sector-aware business-quality calibration while reconciling only observed database fields, recognizing current IDX regulator domains, and retaining explicit official-versus-proxy provenance; scoring weights remain unchanged.",
     },
 )
 
@@ -292,9 +293,23 @@ HYPE_KEYWORDS = (
     "buy now", "cuan besar", "saham gorengan", "target price dinaikkan", "fomo",
 )
 OFFICIAL_HINTS = (
-    "idx.co.id", "ojk.go.id", "investor relation", "annual report", "financial statement",
+    "idx.id", "idx.co.id", "ojk.go.id", "investor relation", "annual report", "financial statement",
     "keterbukaan informasi", "press release", "laporan keuangan", "company website",
 )
+
+_REGULATOR_DOMAINS = ("idx.id", "idx.co.id", "ojk.go.id", "ksei.co.id")
+
+
+def _is_https_regulator_url(value: Any) -> bool:
+    try:
+        parsed = urlparse(str(value or "").strip())
+    except ValueError:
+        return False
+    host = str(parsed.hostname or "").lower().rstrip(".")
+    return bool(
+        parsed.scheme.lower() == "https"
+        and any(host == domain or host.endswith("." + domain) for domain in _REGULATOR_DOMAINS)
+    )
 CONVERSION_TERMS = {
     "REVENUE": ("revenue", "pendapatan", "sales", "penjualan", "order book", "kontrak"),
     "MARGIN": ("margin", "efisiensi", "utilization", "utilisasi", "cost reduction", "biaya"),
@@ -1516,8 +1531,7 @@ def score_narrative_events(events: pd.DataFrame | None, as_of: Any = None, issue
         age_days = max(0.0, (now - published).total_seconds() / 86400) if pd.notna(published) else 120.0
         freshness = 100 * math.exp(-age_days / 55.0)
         source_verified = _truthy(row.get("source_verified", False))
-        url_text = str(row.get("url") or "").lower()
-        regulator_domain = any(domain in url_text for domain in ("idx.co.id", "ojk.go.id", "ksei.co.id"))
+        regulator_domain = _is_https_regulator_url(row.get("url"))
         declared_official = str(row.get("source_tier") or "").upper() in {"OFFICIAL", "ISSUER", "REGULATOR"}
         official = bool(regulator_domain or (declared_official and source_verified))
         evidence_verified = bool(source_verified or regulator_domain)

@@ -11,7 +11,7 @@ import requests
 
 BRIDGE_VERSION = "1.9.1"
 DATABASE_SCHEMA_VERSION = "emir_autonomous_schema_v8"
-SCANNER_VERSION = "1.9.8-persistence-integrity"
+SCANNER_VERSION = "1.9.9-evidence-integrity"
 DEFAULT_WRITE_CHUNK_SIZE = 200
 
 
