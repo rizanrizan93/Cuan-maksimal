@@ -8,6 +8,7 @@ import pandas as pd
 
 from persistence import DatabaseConfig, _request, database_status
 from data_providers import UNIVERSE_METADATA_COLUMNS, normalize_ticker
+from free_tier_storage import prune_scan_history_best_effort
 
 JOB_VERSION = "1.9.14-future-fundamental-db-acceleration"
 ACTIVE_JOB_STATUSES = ("CREATED", "RUNNING", "PAUSED", "FINALIZE_RETRY_REQUIRED")
@@ -156,6 +157,8 @@ def create_scan_job(
     chunk_size: int = 20,
 ) -> dict[str, Any]:
     records = normalized_universe_records(universe) if isinstance(universe, pd.DataFrame) else normalized_universe_records(pd.DataFrame(universe))
+    # Remove old terminal jobs/chunks before allocating another resumable job.
+    prune_scan_history_best_effort(config, keep_scan_runs=2, keep_terminal_jobs=2, exclude_scan_id=str(scan_id))
     now = _now_iso()
     payload = [{
         "scan_id": str(scan_id),
