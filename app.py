@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from ui_dataframe import streamlit_dataframe as safe_dataframe
 
 from data_providers import assess_benchmark_freshness, fetch_many_news, fetch_many_ohlcv, normalize_ticker, parse_universe_frame
 from autonomous_enrichment import (
@@ -289,7 +290,7 @@ render_methodology()
 db_config = config_from_mapping(secrets_mapping())
 db_state = database_status(db_config)
 with st.expander("Database connection & resumable-job readiness", expanded=False):
-    st.dataframe(pd.DataFrame([db_state]), width="stretch", hide_index=True)
+    safe_dataframe(pd.DataFrame([db_state]), width="stretch", hide_index=True)
     if st.button("Test koneksi database", key="db_preflight"):
         st.session_state["emir_db_preflight"] = test_connection(db_config)
     preflight = st.session_state.get("emir_db_preflight")
@@ -299,7 +300,7 @@ with st.expander("Database connection & resumable-job readiness", expanded=False
             st.success(summary_state)
         else:
             st.warning(summary_state)
-        st.dataframe(preflight, width="stretch", hide_index=True)
+        safe_dataframe(preflight, width="stretch", hide_index=True)
 
 with st.sidebar:
     st.header("Resumable Emir Scan")
@@ -407,7 +408,7 @@ if not job_tables_ready:
             "Resumable scan belum melihat schema v8 lengkap/berizin (`cak_scan_jobs`, `cak_scan_job_chunks`, dan `cak_research_memory`). "
             "Periksa detail preflight; lakukan migration/permission repair hanya bila table memang missing atau permission gagal."
         )
-    st.dataframe(preflight, width="stretch", hide_index=True)
+    safe_dataframe(preflight, width="stretch", hide_index=True)
     st.stop()
 
 active_scan_id = str(st.session_state.get("emir_active_scan_id") or "")
@@ -522,7 +523,7 @@ if auto_clicked:
 
 if active_job:
     st.subheader("Resumable scan job")
-    st.dataframe(job_status_frame(active_job), width="stretch", hide_index=True)
+    safe_dataframe(job_status_frame(active_job), width="stretch", hide_index=True)
     progress_value = float(active_job.get("progress_pct") or 0.0)
     st.progress(min(100, max(0, int(progress_value))), text=f"{active_job.get('current_stage')} · {progress_value:.1f}%")
     job_shortlist = list(active_job.get("shortlist") or [])
@@ -675,7 +676,7 @@ with tab_leader:
             f"data-quality>=35={int((data_q>=35).sum())}. Next Leader tidak lagi diblokir oleh timing/Real Money state."
         )
     else:
-        st.dataframe(next_leaders[[c for c in leader_cols if c in next_leaders.columns]], width="stretch", hide_index=True)
+        safe_dataframe(next_leaders[[c for c in leader_cols if c in next_leaders.columns]], width="stretch", hide_index=True)
         st.download_button("Download The Next Leader CSV", next_leaders.to_csv(index=False).encode("utf-8"), "idx_emir_next_leader_v1_9_14.csv", "text/csv")
 
 with tab_top3:
@@ -718,7 +719,7 @@ with tab_radar:
         "sector_rrg_state", "retail_adoption_stage", "idx_integrity_state", "execution_capacity_state",
         "distribution_score", "crowding_score", "real_money_gate_state", "real_money_candidate", "real_money_entry_candidate", "real_money_candidate_score", "real_money_ready", "real_money_block_reasons", "risk_flags",
     ]
-    st.dataframe(radar[[column for column in columns if column in radar.columns]], width="stretch", hide_index=True)
+    safe_dataframe(radar[[column for column in columns if column in radar.columns]], width="stretch", hide_index=True)
     st.download_button(
         "Download Emir radar CSV",
         radar.to_csv(index=False).encode("utf-8"),
@@ -744,7 +745,7 @@ with tab_thesis:
         "conversion_path", "issuer_alignment_score",
         "retail_adoption_stage", "thesis_statement", "narrative_latest_title", "what_must_happen_next",
     ]
-    st.dataframe(radar[[column for column in columns if column in radar.columns]], width="stretch", hide_index=True)
+    safe_dataframe(radar[[column for column in columns if column in radar.columns]], width="stretch", hide_index=True)
 
 with tab_flow:
     columns = [
@@ -755,7 +756,7 @@ with tab_flow:
         "accumulation_days20", "absorption_days20", "distribution_days20", "failed_absorption_days20",
         "beneficial_owner_inference_state",
     ]
-    st.dataframe(radar[[column for column in columns if column in radar.columns]], width="stretch", hide_index=True)
+    safe_dataframe(radar[[column for column in columns if column in radar.columns]], width="stretch", hide_index=True)
 
 with tab_structure:
     columns = [
@@ -766,7 +767,7 @@ with tab_structure:
         "sector", "sector_rrg_state", "sector_leadership_score", "market_regime", "market_context_score",
         "reported_free_float_pct", "effective_free_float_pct", "fake_float_gap_pct", "passive_flow_risk_score",
     ]
-    st.dataframe(radar[[column for column in columns if column in radar.columns]], width="stretch", hide_index=True)
+    safe_dataframe(radar[[column for column in columns if column in radar.columns]], width="stretch", hide_index=True)
 
 with tab_integrity:
     columns = [
@@ -786,7 +787,7 @@ with tab_integrity:
         "estimated_participation_rate_pct", "max_participation_rate_pct",
         "slippage_bps_proxy", "execution_capacity_state",
     ]
-    st.dataframe(radar[[column for column in columns if column in radar.columns]], width="stretch", hide_index=True)
+    safe_dataframe(radar[[column for column in columns if column in radar.columns]], width="stretch", hide_index=True)
     st.caption("IDX integrity is a direct-evidence production gate. HSC, special monitoring/FCA, suspension, serious sanctions, stale evidence, or unresolved corporate-action anomalies cannot be treated as bullish scarcity.")
 
 with tab_outcomes:
@@ -796,7 +797,7 @@ with tab_outcomes:
         "outcome_median_drawdown_pct", "outcome_thesis_invalidation_rate_pct",
         "outcome_calibration_state", "emir_decision_state",
     ]
-    st.dataframe(radar[[column for column in columns if column in radar.columns]], width="stretch", hide_index=True)
+    safe_dataframe(radar[[column for column in columns if column in radar.columns]], width="stretch", hide_index=True)
     if isinstance(result.get("outcomes"), pd.DataFrame) and not result["outcomes"].empty:
         st.download_button(
             "Download verified outcome memory",
@@ -825,7 +826,7 @@ with tab_real_money:
     if real_money_top3.empty:
         st.warning("Belum ada kandidat modal riil yang lolos hard-risk + timing gate. Scanner tidak mempromosikan WAIT/NO_EDGE hanya untuk mengisi Top 3.")
     else:
-        st.dataframe(real_money_top3[[c for c in rm_top_cols if c in real_money_top3.columns]], width="stretch", hide_index=True)
+        safe_dataframe(real_money_top3[[c for c in rm_top_cols if c in real_money_top3.columns]], width="stretch", hide_index=True)
         st.download_button(
             "Download Real Money Candidate Top 3 CSV",
             real_money_top3.to_csv(index=False).encode("utf-8"),
@@ -851,7 +852,7 @@ with tab_real_money:
         sort_cols = [c for c in ["real_money_ready", "real_money_entry_candidate", "real_money_candidate", "real_money_candidate_score"] if c in rm.columns]
         ascending = [False, False, False, False][:len(sort_cols)]
         rm = rm.sort_values(sort_cols, ascending=ascending, na_position="last")
-    st.dataframe(rm, width="stretch", hide_index=True)
+    safe_dataframe(rm, width="stretch", hide_index=True)
     st.download_button("Download Real Money Gate CSV", rm.to_csv(index=False).encode("utf-8"), "idx_emir_real_money_gate_v1_9_14.csv", "text/csv")
 
 with tab_scenario:
@@ -866,7 +867,7 @@ with tab_scenario:
         "max_safe_position_value_idr", "estimated_participation_rate_pct", "slippage_bps_proxy",
         "execution_capacity_state", "real_money_gate_state", "real_money_candidate", "real_money_entry_candidate", "real_money_candidate_score", "real_money_ready", "real_money_block_reasons", "real_money_manual_checklist", "guarded_position_cap_after_manual_confirmation_pct", "entry_authorization_state", "risk_budget_pct", "trim_state",
     ]
-    st.dataframe(radar[[column for column in columns if column in radar.columns]], width="stretch", hide_index=True)
+    safe_dataframe(radar[[column for column in columns if column in radar.columns]], width="stretch", hide_index=True)
     st.caption(
         "Level harga adalah scenario plan. Precise entry hanya aktif bila direct bid-offer evidence terverifikasi. "
         "RR adalah scenario geometry independen, bukan formula resmi CAK. Dalam GUARDED_REAL_MONEY, proxy EOD tidak memberi otorisasi entry."
@@ -896,12 +897,12 @@ with tab_chart:
 
 with tab_evidence:
     st.subheader("Provider audit")
-    st.dataframe(result["provider_audit"], width="stretch", hide_index=True)
+    safe_dataframe(result["provider_audit"], width="stretch", hide_index=True)
     st.subheader("Autonomous evidence")
     if result.get("autonomous_evidence", pd.DataFrame()).empty:
         st.warning("Autonomous provider tidak menghasilkan evidence.")
     else:
-        st.dataframe(result["autonomous_evidence"], width="stretch", hide_index=True)
+        safe_dataframe(result["autonomous_evidence"], width="stretch", hide_index=True)
         st.download_button(
             "Download autonomous evidence",
             result["autonomous_evidence"].to_csv(index=False).encode("utf-8"),
@@ -912,7 +913,7 @@ with tab_evidence:
     if result["direct_evidence"].empty:
         st.info("Tidak ada direct evidence override. Scanner tetap berjalan dengan autonomous public data dan proxy yang diberi label eksplisit.")
     else:
-        st.dataframe(result["direct_evidence"], width="stretch", hide_index=True)
+        safe_dataframe(result["direct_evidence"], width="stretch", hide_index=True)
         st.download_button(
             "Download direct evidence",
             result["direct_evidence"].to_csv(index=False).encode("utf-8"),
@@ -923,7 +924,7 @@ with tab_evidence:
     if result["events"].empty:
         st.warning("Tidak ada narrative event yang berhasil dikoleksi. Flow radar bukan thesis narrative terkonfirmasi.")
     else:
-        st.dataframe(result["events"], width="stretch", hide_index=True)
+        safe_dataframe(result["events"], width="stretch", hide_index=True)
         st.download_button(
             "Download narrative evidence",
             result["events"].to_csv(index=False).encode("utf-8"),
@@ -934,7 +935,7 @@ with tab_evidence:
 with tab_formula:
     st.subheader("Public Research Formula Registry")
     registry = formula_registry_frame()
-    st.dataframe(registry, width="stretch", hide_index=True)
+    safe_dataframe(registry, width="stretch", hide_index=True)
     st.download_button(
         "Download formula registry CSV",
         registry.to_csv(index=False).encode("utf-8"),
@@ -948,15 +949,15 @@ with tab_formula:
 
 with tab_database:
     st.subheader("Final result transfer reconciliation")
-    st.dataframe(transfer_summary, width="stretch", hide_index=True)
+    safe_dataframe(transfer_summary, width="stretch", hide_index=True)
     st.caption(
         "Tabel ini membandingkan jumlah hasil yang seharusnya disimpan, jumlah yang ditulis, dan exact readback per scan_id. "
         "Radar, narrative, provider audit, autonomous evidence, direct evidence, dan outcome memory ditulis terpisah."
     )
     st.subheader("Durable research memory")
     st.caption("Source cache adalah jalur reuse cepat. Research memory menyimpan versi evidence fundamental/KSEI/narrative lintas scan agar history tidak hilang saat cache terbaru diperbarui.")
-    st.dataframe(result.get("research_memory_write_report", pd.DataFrame()), width="stretch", hide_index=True)
-    st.dataframe(result.get("research_memory_verification", pd.DataFrame()), width="stretch", hide_index=True)
+    safe_dataframe(result.get("research_memory_write_report", pd.DataFrame()), width="stretch", hide_index=True)
+    safe_dataframe(result.get("research_memory_verification", pd.DataFrame()), width="stretch", hide_index=True)
     db_health_parts=[]
     for label, frame in (("research_memory", result.get("research_memory_verification")), ("final_transfer", transfer_summary), ("scan_commit", result.get("commit_report"))):
         if isinstance(frame, pd.DataFrame) and not frame.empty:
@@ -965,19 +966,19 @@ with tab_database:
         db_health=pd.concat(db_health_parts,ignore_index=True,sort=False)
         st.download_button("Download database health v1.9.14", db_health.to_csv(index=False).encode("utf-8"), "idx_emir_database_health_v1_9_14.csv", "text/csv")
     st.subheader("Persistent source-cache commit")
-    st.dataframe(result.get("cache_write_report", pd.DataFrame()), width="stretch", hide_index=True)
+    safe_dataframe(result.get("cache_write_report", pd.DataFrame()), width="stretch", hide_index=True)
     st.subheader("Persistent source-cache hash readback")
-    st.dataframe(result.get("cache_verification", pd.DataFrame()), width="stretch", hide_index=True)
+    safe_dataframe(result.get("cache_verification", pd.DataFrame()), width="stretch", hide_index=True)
     st.subheader("Cache utilization")
-    st.dataframe(result.get("cache_summary", pd.DataFrame()), width="stretch", hide_index=True)
+    safe_dataframe(result.get("cache_summary", pd.DataFrame()), width="stretch", hide_index=True)
     st.subheader("Database persistence state")
-    st.dataframe(result["commit_report"], width="stretch", hide_index=True)
+    safe_dataframe(result["commit_report"], width="stretch", hide_index=True)
     st.subheader("Database write report")
-    st.dataframe(result["write_report"], width="stretch", hide_index=True)
+    safe_dataframe(result["write_report"], width="stretch", hide_index=True)
     st.subheader("Automatic exact readback")
     verification = result.get("verification")
     if isinstance(verification, pd.DataFrame):
-        st.dataframe(verification, width="stretch", hide_index=True)
+        safe_dataframe(verification, width="stretch", hide_index=True)
         st.download_button(
             "Download database readback audit",
             verification.to_csv(index=False).encode("utf-8"),
@@ -1003,4 +1004,4 @@ with tab_database:
             st.success("Reverification 100% exact.")
         else:
             st.warning(f"Readback belum penuh: {state}. Hasil scan tetap dapat digunakan; baris yang hilang akan dihitung/diambil ulang pada scan berikutnya.")
-        st.dataframe(recheck, width="stretch", hide_index=True)
+        safe_dataframe(recheck, width="stretch", hide_index=True)
