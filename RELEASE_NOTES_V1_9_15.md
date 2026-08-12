@@ -10,5 +10,17 @@ Storage-safety release for Supabase Free deployments. Analytical scoring and Gua
 - Housekeeping is best-effort and cannot abort a scan.
 - Resumable JOB_VERSION remains 1.9.14-compatible so existing checkpoints are not invalidated.
 
-## Database recovery note
-The existing Emir Supabase project is currently not accepting connections after running out of disk. Do not rerun schema migrations against that outage state. Once PostgreSQL accepts connections, prune historical rows before starting a new 400-ticker scan.
+## Production database replacement
+The original project `Idx emir framework` (`utgrknbmtmhpjurvcabg`, Tokyo) exhausted its disk and entered PostgreSQL recovery loops. It has been paused, not deleted.
+
+Replacement production database:
+- project: `Idx emir framework v2`
+- project ref: `vbtpwpmkfxzqeuvztcmz`
+- region: `ap-southeast-1` (Singapore)
+- API URL: `https://vbtpwpmkfxzqeuvztcmz.supabase.co`
+- plan: Supabase Free
+- schema: Emir v8 + persistence-integrity hotfix
+- RLS: enabled on all scanner tables; anon/authenticated table access revoked
+- initial database size after schema install: approximately 11 MB
+
+The Streamlit deployment must use the replacement project's backend secret/service-role key together with the URL above. Publishable/anon keys are intentionally rejected by the scanner database bridge.
