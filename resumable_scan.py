@@ -56,6 +56,7 @@ from persistent_cache import (
 )
 from research_memory import build_research_memory_rows, persist_verify_research_memory
 from future_fundamental import calculate_future_fundamental, future_fundamental_evidence_frame
+from free_tier_storage import prune_scan_history_best_effort
 
 from top3_dashboard import enrich_dashboard_scores, select_top3, select_next_leaders
 from scan_jobs import (
@@ -125,6 +126,20 @@ def _records(frame: pd.DataFrame | None) -> list[dict[str, Any]]:
 
 def _frame(records: Any) -> pd.DataFrame:
     return pd.DataFrame(records if isinstance(records, list) else [])
+
+
+def _checkpoint_audit_records(frame: pd.DataFrame | None, limit: int = 25) -> list[dict[str, Any]]:
+    """Persist a compact checkpoint audit instead of entire wide provider payloads."""
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return []
+    columns = [column for column in (
+        "ticker", "provider", "status", "audit_family", "bars", "last_date", "detail", "error"
+    ) if column in frame.columns]
+    local = frame[columns].head(max(1, int(limit))).copy() if columns else frame.head(max(1, int(limit))).copy()
+    for column in ("detail", "error"):
+        if column in local.columns:
+            local[column] = local[column].astype(str).str.slice(0, 500)
+    return _records(local)
 
 
 def _truthy(value: Any) -> bool:
@@ -573,7 +588,7 @@ def _process_cache_stage(
         payload={
             "tickers": chunk,
             "failed_tickers": failed,
-            "audit_records": _records(audit),
+            "audit_records": _checkpoint_audit_records(audit),
             "cache_write_summary": _records(write.head(1)),
             "cache_verify_summary": _records(verify.head(1)),
         },
@@ -667,7 +682,7 @@ def process_next_job_step(config: DatabaseConfig, job: Mapping[str, Any], *, now
                 "shortlist_count": len(shortlist),
                 "deep_review_scope": str(settings.get("deep_review_scope") or "ALL_ELIGIBLE"),
                 "eligible_count": int(context["fast"].get("feature_state", pd.Series(dtype=str)).eq("OK").sum()),
-                "audit_records": [*_records(load_audit), *_records(benchmark_audit)],
+                "audit_records": [*_checkpoint_audit_records(load_audit), *_checkpoint_audit_records(benchmark_audit)],
             },
         )
         next_stage = _next_deep_stage(settings, "FAST_RANKING", shortlist)
@@ -1003,6 +1018,9 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
             else ""
         ),
     })
+    storage_housekeeping = prune_scan_history_best_effort(
+        config, keep_scan_runs=2, keep_terminal_jobs=2, exclude_scan_id=scan_id
+    )
     result = {
         "radar": radar,
         "frames": frames,
@@ -1042,6 +1060,7 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
         "expected_research_memory": len(research_memory_rows),
         "deep_review_scope": str(settings.get("deep_review_scope") or "ALL_ELIGIBLE"),
         "job_status": terminal_status,
+        "free_tier_storage_housekeeping": storage_housekeeping,
     }
     return result, updated
 

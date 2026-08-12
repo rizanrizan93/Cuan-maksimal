@@ -130,6 +130,24 @@ def database_status(config: DatabaseConfig) -> dict[str, Any]:
     }
 
 
+def _database_failure_state(exc: Exception) -> str:
+    """Classify preflight failures without confusing an outage with a missing schema."""
+    detail = f"{type(exc).__name__}: {exc}".lower()
+    transport_tokens = (
+        "econnrefused", "connection refused", "connection reset", "connection aborted",
+        "timed out", "timeout", "readtimeout", "connecttimeout", "max retries",
+        "502", "503", "504", "service unavailable", "upstream connect",
+        "database system is not accepting connections", "no space left on device",
+        "network is unreachable",
+    )
+    if any(token in detail for token in transport_tokens):
+        return "DATABASE_UNREACHABLE"
+    permission_tokens = ("401", "403", "permission denied", "insufficient privilege", "jwt", "apikey")
+    if any(token in detail for token in permission_tokens):
+        return "DATABASE_PERMISSION_REQUIRED"
+    return "MIGRATION_OR_SCHEMA_REQUIRED"
+
+
 def test_connection(config: DatabaseConfig) -> pd.DataFrame:
     columns = [
         "bridge_version", "schema_version", "database_mode", "database_key_type", "write_policy",
@@ -166,15 +184,29 @@ def test_connection(config: DatabaseConfig) -> pd.DataFrame:
             _request(config, "GET", table, params={"select": select_column, "limit": "1"}, timeout=8)
             rows.append({**base, "state": "READY", "table": table, "detail": "REST read succeeded."})
         except Exception as exc:
-            rows.append({**base, "state": "MIGRATION_OR_PERMISSION_REQUIRED", "table": table, "detail": str(exc)})
+            rows.append({**base, "state": _database_failure_state(exc), "table": table, "detail": str(exc)})
     healthy = all(row["state"] == "READY" for row in rows)
+    unreachable = sum(row["state"] == "DATABASE_UNREACHABLE" for row in rows)
+    ready_count = sum(row["state"] == "READY" for row in rows)
+    if healthy:
+        summary_state = "HEALTHY_EMIR_DATABASE_V8"
+        summary_detail = f"{ready_count}/{len(checks)} tables readable."
+    elif unreachable >= max(1, len(checks) - 1):
+        summary_state = "DATABASE_UNREACHABLE_OR_RESOURCE_EXHAUSTED"
+        summary_detail = (
+            f"Database transport failed for {unreachable}/{len(checks)} checks. "
+            "Do not rerun migrations until the database itself accepts connections."
+        )
+    else:
+        summary_state = "DATABASE_NOT_READY_V8"
+        summary_detail = f"{ready_count}/{len(checks)} tables readable; inspect table-level states before migration."
     rows.insert(
         0,
         {
             **base,
-            "state": "HEALTHY_EMIR_DATABASE_V8" if healthy else "DATABASE_NOT_READY_V8",
+            "state": summary_state,
             "table": "__SUMMARY__",
-            "detail": f"{sum(row['state'] == 'READY' for row in rows)}/{len(checks)} tables readable.",
+            "detail": summary_detail,
         },
     )
     return pd.DataFrame(rows, columns=columns)

@@ -396,10 +396,17 @@ if not isinstance(preflight, pd.DataFrame):
 preflight_state = str(preflight.iloc[0].get("state", "")) if not preflight.empty else "DATABASE_NOT_READY_V7"
 job_tables_ready = preflight_state == "HEALTHY_EMIR_DATABASE_V8"
 if not job_tables_ready:
-    st.error(
-        "Resumable scan memerlukan database schema v8 (`cak_scan_jobs`, `cak_scan_job_chunks`, dan `cak_research_memory`). "
-        "Jalankan migration_v8.sql, verify_v8.sql, lalu reboot."
-    )
+    if preflight_state == "DATABASE_UNREACHABLE_OR_RESOURCE_EXHAUSTED":
+        st.error(
+            "Database Supabase sedang tidak menerima koneksi / resource exhausted. "
+            "Ini BUKAN bukti schema v8 hilang. Pulihkan health database terlebih dahulu; "
+            "jangan menjalankan migration ulang selama database belum menerima koneksi."
+        )
+    else:
+        st.error(
+            "Resumable scan belum melihat schema v8 lengkap/berizin (`cak_scan_jobs`, `cak_scan_job_chunks`, dan `cak_research_memory`). "
+            "Periksa detail preflight; lakukan migration/permission repair hanya bila table memang missing atau permission gagal."
+        )
     st.dataframe(preflight, width="stretch", hide_index=True)
     st.stop()
 
