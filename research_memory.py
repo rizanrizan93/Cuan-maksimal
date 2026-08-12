@@ -8,9 +8,84 @@ import time
 import pandas as pd
 
 from persistence import DatabaseConfig, _json_value, _post_payload_in_chunks, database_status, _request
+from free_tier_storage import prune_research_memory_best_effort
 
 
 _NULLISH_DATE_TOKENS = {"", "<NA>", "NA", "N/A", "NAN", "NAT", "NONE", "NULL"}
+
+_VOLATILE_MEMORY_KEYS = {
+    "observed_at", "checked_at", "updated_at", "created_at", "fetched_at", "retrieved_at",
+    "last_scan_id", "scan_id", "cache_state", "cache_status", "cache_age_hours",
+    "provider_latency_ms", "request_elapsed_ms",
+}
+_EPHEMERAL_MEMORY_FAMILIES = {
+    "BROKER_INVENTORY_OHLCV_PROXY",
+    "BID_OFFER_EOD_PROXY",
+}
+
+_NARRATIVE_KEEP_PER_TICKER_PER_SCAN = 8
+
+_COMMON_MEMORY_KEYS = {
+    "ticker", "evidence_type", "provider", "collection_provider", "source_url", "url",
+    "source_verified", "source_tier", "observed_at", "published_at", "event_date",
+    "title", "summary", "publisher", "category", "materiality_score", "financial_bridge_score",
+    "top_down_catalyst_score", "industry_translation_score", "issuer_alignment_score",
+}
+_MEMORY_PREFIXES = (
+    "fundamental_", "future_", "idx_official_", "idx_integrity_", "ksei_", "ownership_",
+    "revenue_", "earnings_", "operating_cash_flow", "free_cash_flow", "cash_", "debt_",
+    "der_", "roe_", "roa_", "net_margin", "operating_margin", "current_ratio",
+    "interest_bearing_", "total_liabilities", "conversion_", "story_runway", "retail_adoption",
+)
+
+
+def _compact_value(value: Any) -> Any:
+    safe = _json_value(value)
+    if isinstance(safe, str):
+        return safe[:1200]
+    if isinstance(safe, list):
+        return [_compact_value(item) for item in safe[:20]]
+    if isinstance(safe, dict):
+        items = list(safe.items())[:30]
+        return {str(k): _compact_value(v) for k, v in items}
+    return safe
+
+
+def _compact_memory_payload(record: Mapping[str, Any], family: str) -> dict[str, Any]:
+    """Store only evidence needed for later research review, not whole wide scan rows."""
+    output: dict[str, Any] = {}
+    for key, value in record.items():
+        name = str(key)
+        lower = name.lower()
+        if name in _COMMON_MEMORY_KEYS or any(lower.startswith(prefix) for prefix in _MEMORY_PREFIXES):
+            output[name] = _compact_value(value)
+        elif lower.endswith(("_score", "_state", "_period", "_pct", "_flag")):
+            output[name] = _compact_value(value)
+    output.setdefault("ticker", _compact_value(record.get("ticker")))
+    output.setdefault("evidence_type", family)
+    return output
+
+
+def _bounded_narrative_events(events: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(events, pd.DataFrame) or events.empty or "ticker" not in events.columns:
+        return events
+    local = events.copy()
+    obs_source = local["published_at"] if "published_at" in local.columns else local["event_date"] if "event_date" in local.columns else pd.Series(pd.NaT, index=local.index)
+    mat_source = local["materiality_score"] if "materiality_score" in local.columns else pd.Series(0.0, index=local.index)
+    local["_obs"] = pd.to_datetime(obs_source, errors="coerce", utc=True)
+    local["_mat"] = pd.to_numeric(mat_source, errors="coerce").fillna(0.0)
+    local = local.sort_values(["ticker", "_mat", "_obs"], ascending=[True, False, False], na_position="last")
+    local = local.groupby("ticker", sort=False, as_index=False, group_keys=False).head(_NARRATIVE_KEEP_PER_TICKER_PER_SCAN)
+    return local.drop(columns=["_obs", "_mat"], errors="ignore")
+
+
+def _semantic_memory_payload(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Remove fetch/checkpoint metadata so identical evidence upserts instead of growing forever."""
+    return {
+        str(key): value
+        for key, value in record.items()
+        if str(key).lower() not in _VOLATILE_MEMORY_KEYS
+    }
 
 
 def _normalise_date(value: Any) -> str | None:
@@ -45,49 +120,47 @@ def _digest(value: Any) -> str:
 def build_research_memory_rows(scan_id: str, events: pd.DataFrame | None, autonomous_evidence: pd.DataFrame | None) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if isinstance(events, pd.DataFrame) and not events.empty:
+        events = _bounded_narrative_events(events)
         for _, row in events.reset_index(drop=True).iterrows():
             rec = _canon(row.to_dict())
             ticker = str(rec.get("ticker") or "")
             family = "NARRATIVE_EVENT"
             period = _normalise_observed_at(rec.get("published_at") or rec.get("event_date"))
-            content_hash = _digest(rec)
+            compact = _compact_memory_payload(_semantic_memory_payload(rec), family)
+            content_hash = _digest(compact)
             rows.append({
                 "memory_id": _digest({"ticker": ticker, "family": family, "hash": content_hash}),
                 "ticker": ticker, "family": family, "effective_period": None,
                 "observed_at": period, "provider": str(rec.get("collection_provider") or rec.get("publisher") or ""),
                 "source_url": rec.get("url") or rec.get("source_url"), "source_verified": bool(rec.get("source_verified", False)),
                 "official_source": str(rec.get("source_tier") or "").upper() in {"OFFICIAL", "ISSUER", "REGULATOR"},
-                "content_sha256": content_hash, "last_scan_id": scan_id, "payload": rec,
+                "content_sha256": content_hash, "last_scan_id": scan_id, "payload": compact,
             })
     if isinstance(autonomous_evidence, pd.DataFrame) and not autonomous_evidence.empty:
         for _, row in autonomous_evidence.reset_index(drop=True).iterrows():
             rec = _canon(row.to_dict())
             ticker = str(rec.get("ticker") or "")
             family = str(rec.get("evidence_type") or "AUTONOMOUS_EVIDENCE")
+            if family in _EPHEMERAL_MEMORY_FAMILIES:
+                continue
             period_raw = (rec.get("fundamental_latest_period") if family == "PUBLIC_FUNDAMENTAL_PROXY" else rec.get("idx_official_period_end") if family == "IDX_OFFICIAL_FUNDAMENTAL" else None)
             period = _normalise_date(period_raw)
             observed = _normalise_observed_at(rec.get("observed_at")) or _normalise_observed_at(period)
-            content_hash = _digest(rec)
+            compact = _compact_memory_payload(_semantic_memory_payload(rec), family)
+            content_hash = _digest(compact)
             rows.append({
                 "memory_id": _digest({"ticker": ticker, "family": family, "period": period, "hash": content_hash}),
                 "ticker": ticker, "family": family, "effective_period": period,
                 "observed_at": observed, "provider": str(rec.get("provider") or rec.get("fundamental_provenance_state") or rec.get("ksei_provider_state") or ""),
                 "source_url": rec.get("source_url") or rec.get("idx_official_source_url") or rec.get("idx_integrity_source_url") or rec.get("ksei_source_url"),
                 "source_verified": bool(rec.get("source_verified", False) or rec.get("idx_official_source_verified", False)), "official_source": bool((rec.get("source_verified", False) and family.startswith("KSEI_")) or (family == "IDX_OFFICIAL_FUNDAMENTAL" and rec.get("idx_official_source_verified", False))),
-                "content_sha256": content_hash, "last_scan_id": scan_id, "payload": rec,
+                "content_sha256": content_hash, "last_scan_id": scan_id, "payload": compact,
             })
     dedup = {row["memory_id"]: row for row in rows}
     return list(dedup.values())
 
 
 def persist_verify_research_memory(config: DatabaseConfig, *, scan_id: str, rows: list[dict[str, Any]], chunk_size: int = 100) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Persist durable memory with chunk-level retries and explicit partial verification.
-
-    A single transient Supabase failure must not erase the status of chunks already
-    written. v1.9.2 previously wrapped the whole multi-chunk write in one try/except,
-    so one failed chunk could report 0/N VERIFY_SKIPPED even after earlier chunks had
-    committed. This routine records partial writes and still performs hash readback.
-    """
     base = database_status(config)
     if not config.ready:
         return pd.DataFrame([{**base, "table": "cak_research_memory", "rows_attempted": len(rows), "rows_written": 0, "state": "RESEARCH_MEMORY_DATABASE_DISABLED"}]), pd.DataFrame([{**base, "table": "cak_research_memory", "rows_expected": len(rows), "rows_verified": 0, "state": "RESEARCH_MEMORY_VERIFY_SKIPPED", "detail": "database disabled"}])
@@ -153,14 +226,11 @@ def persist_verify_research_memory(config: DatabaseConfig, *, scan_id: str, rows
     else:
         verify_state = "RESEARCH_MEMORY_HASH_MISMATCH"
     verify = pd.DataFrame([{**base, "table": "cak_research_memory", "rows_expected": len(expected), "rows_verified": verified, "read_error_chunks": len(read_errors), "state": verify_state, "detail": " | ".join(read_errors[:8])}])
+    prune_research_memory_best_effort(config)
     return write, verify
 
 
 def load_latest_research_memory(config: DatabaseConfig, tickers: list[str], family: str, *, limit_per_ticker: int = 1) -> dict[str, list[dict[str, Any]]]:
-    """Load latest durable memory rows for a family, grouped by ticker.
-
-    Used only as a fallback behind the normal source cache/provider refresh path.
-    """
     output: dict[str, list[dict[str, Any]]] = {str(t): [] for t in tickers}
     if not config.ready or not tickers:
         return output
