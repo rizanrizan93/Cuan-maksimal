@@ -49,8 +49,11 @@ jobs:
         run: python -m pip install --disable-pip-version-check -r requirements.txt pytest
 
       - name: Compile and regression test
+        env:
+          PYTHONPATH: .
         run: |
           python -m compileall -q app.py ui_dataframe.py
+          python -c "import ui_dataframe; print(ui_dataframe.__file__)"
           pytest -q tests/test_ui_dataframe_arrow_safe.py
 
       - name: Commit runtime patch
