@@ -1,4 +1,8 @@
+from pathlib import Path
 from types import SimpleNamespace
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import free_tier_storage as storage
 
