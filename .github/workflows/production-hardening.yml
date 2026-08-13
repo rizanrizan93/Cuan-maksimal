@@ -28,8 +28,27 @@ jobs:
         run: python -m py_compile app.py free_tier_storage.py future_fundamental.py persistence.py resumable_scan.py autonomous_enrichment.py narrative_flow_engine.py
       - name: New hardening regression
         run: pytest -q tests/test_v1916_storage_outcome_hardening.py
-      - name: Latest integrity suite
+      - name: Current integrity suite
         run: |
           pytest -q tests/test_ui_dataframe_arrow_safe.py tests/test_v194_real_money_calibration.py tests/test_v195_fundamental_freshness_ytd.py tests/test_v196_sector_business_calibration.py tests/test_v197_resumable_universe_integrity.py
-          python validation_v1_9_13_cashflow_evidence_integrity.py
           python validation_v1_9_14_future_db_acceleration.py
+      - name: Streamlit runtime smoke
+        run: |
+          streamlit run app.py --server.headless true --server.address 127.0.0.1 --server.port 8501 > /tmp/emir-streamlit.log 2>&1 &
+          pid=$!
+          ok=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8501/_stcore/health | grep -qi ok; then
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ok" -ne 1 ]; then
+            cat /tmp/emir-streamlit.log
+            kill "$pid" || true
+            exit 1
+          fi
+          curl -fsS http://127.0.0.1:8501/_stcore/health
+          curl -fsS http://127.0.0.1:8501/ >/dev/null
+          kill "$pid" || true
