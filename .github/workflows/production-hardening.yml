@@ -1,0 +1,32 @@
+name: Emir production hardening
+
+on:
+  push:
+    branches: [codex/production-hardening-20260813]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      - name: Compile critical modules
+        run: python -m py_compile app.py free_tier_storage.py future_fundamental.py persistence.py resumable_scan.py autonomous_enrichment.py narrative_flow_engine.py
+      - name: New hardening regression
+        run: pytest -q tests/test_v1916_storage_outcome_hardening.py
+      - name: Latest integrity suite
+        run: |
+          pytest -q tests/test_ui_dataframe_arrow_safe.py tests/test_v194_real_money_calibration.py tests/test_v195_fundamental_freshness_ytd.py tests/test_v196_sector_business_calibration.py tests/test_v197_resumable_universe_integrity.py
+          python validation_v1_9_13_cashflow_evidence_integrity.py
+          python validation_v1_9_14_future_db_acceleration.py
