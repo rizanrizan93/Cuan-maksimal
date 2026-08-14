@@ -169,6 +169,7 @@ def _merge_evidence_profile_maps(
     provenance_key: str,
     hard_block_key: str | None = None,
     reason_key: str | None = None,
+    coverage_mode: str = "max_overlap",
 ) -> dict[str, dict[str, Any]]:
     """Non-destructive evidence merge for autonomous + direct profiles.
 
@@ -191,7 +192,10 @@ def _merge_evidence_profile_maps(
         direct_cov = pd.to_numeric(pd.Series([direct.get(coverage_key)]), errors="coerce").iloc[0]
         base_cov = float(base_cov) if np.isfinite(base_cov) else 0.0
         direct_cov = float(direct_cov) if np.isfinite(direct_cov) else 0.0
-        merged[coverage_key] = round(max(base_cov, direct_cov), 1)
+        if str(coverage_mode).strip().lower() == "union_disjoint":
+            merged[coverage_key] = round(min(100.0, base_cov + direct_cov), 1)
+        else:
+            merged[coverage_key] = round(max(base_cov, direct_cov), 1)
         base_prov = str(base.get(provenance_key) or "").strip()
         direct_prov = str(direct.get(provenance_key) or "").strip()
         if base_prov and direct_prov and base_prov != direct_prov:
@@ -930,6 +934,7 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
     ownership_map = _merge_evidence_profile_maps(
         ownership_auto_map, parse_ownership(raw_ownership),
         coverage_key="ownership_coverage_pct", provenance_key="ownership_provenance_state",
+        coverage_mode="union_disjoint",
     )
     orderbook_map = {**orderbook_proxy_map, **parse_orderbook_evidence(raw_orderbook)}
     idx_integrity_map = _merge_evidence_profile_maps(
