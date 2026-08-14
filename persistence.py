@@ -10,7 +10,7 @@ import requests
 
 
 BRIDGE_VERSION = "1.9.1"
-DATABASE_SCHEMA_VERSION = "emir_autonomous_schema_v8"
+DATABASE_SCHEMA_VERSION = "emir_autonomous_schema_v9"
 SCANNER_VERSION = "1.9.14-future-fundamental-db-acceleration"
 DEFAULT_WRITE_CHUNK_SIZE = 200
 
@@ -170,6 +170,7 @@ def test_connection(config: DatabaseConfig) -> pd.DataFrame:
         "cak_narrative_events": "event_id",
         "cak_provider_audit": "audit_id",
         "cak_direct_evidence": "evidence_id",
+        "cak_persistent_direct_evidence": "evidence_key",
         "cak_autonomous_evidence": "evidence_id",
         "cak_outcome_memory": "outcome_id",
         "cak_ohlcv_cache": "ticker",
@@ -189,7 +190,7 @@ def test_connection(config: DatabaseConfig) -> pd.DataFrame:
     unreachable = sum(row["state"] == "DATABASE_UNREACHABLE" for row in rows)
     ready_count = sum(row["state"] == "READY" for row in rows)
     if healthy:
-        summary_state = "HEALTHY_EMIR_DATABASE_V8"
+        summary_state = "HEALTHY_EMIR_DATABASE_V9"
         summary_detail = f"{ready_count}/{len(checks)} tables readable."
     elif unreachable >= max(1, len(checks) - 1):
         summary_state = "DATABASE_UNREACHABLE_OR_RESOURCE_EXHAUSTED"
@@ -198,7 +199,7 @@ def test_connection(config: DatabaseConfig) -> pd.DataFrame:
             "Do not rerun migrations until the database itself accepts connections."
         )
     else:
-        summary_state = "DATABASE_NOT_READY_V8"
+        summary_state = "DATABASE_NOT_READY_V9"
         summary_detail = f"{ready_count}/{len(checks)} tables readable; inspect table-level states before migration."
     rows.insert(
         0,
