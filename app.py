@@ -44,7 +44,10 @@ from scan_jobs import (
     job_status_frame, universe_hash,
 )
 from resumable_scan import load_persisted_scan_result, process_next_job_step
-from top3_dashboard import enrich_dashboard_scores, render_top3_dashboard_html, select_top3, select_next_leaders, select_real_money_top3
+from top3_dashboard import (
+    SMART_MONEY_COST_BASIS_VERSION, enrich_dashboard_scores, render_top3_dashboard_html,
+    select_top3, select_next_leaders, select_real_money_top3,
+)
 from dashboard_persistence import build_database_transfer_summary, database_transfer_totals
 from persistent_cache import (
     cache_commit_succeeded,
@@ -251,6 +254,8 @@ def make_chart(frame: pd.DataFrame, row: pd.Series) -> go.Figure:
     for label, key in (
         ("Entry Low", "entry_low"), ("Entry High", "entry_high"), ("Trigger", "trigger"),
         ("Stop", "stop_loss"), ("TP1", "tp1"), ("TP2", "tp2"), ("Defended", "defended_level"),
+        ("SM Cost Low", "estimated_smart_money_cost_low"), ("SM Cost", "estimated_smart_money_cost"),
+        ("SM Cost High", "estimated_smart_money_cost_high"),
     ):
         value = pd.to_numeric(pd.Series([row.get(key)]), errors="coerce").iloc[0]
         if np.isfinite(value):
@@ -284,6 +289,10 @@ st.caption(
     f"Versi {ENGINE_VERSION} · resumable chunked scan · progressive deep review · "
     "hasil dan evidence dipindahkan ke Supabase secara terukur"
 )
+st.caption(
+    f"Runtime contract: database schema v9 · Smart Money Cost Basis {SMART_MONEY_COST_BASIS_VERSION} · "
+    "estimated cost selalu diberi label proxy kecuali direct broker evidence terverifikasi."
+)
 render_methodology()
 
 # The database owns resumable checkpoints. Final result persistence remains best-effort.
@@ -296,7 +305,7 @@ with st.expander("Database connection & resumable-job readiness", expanded=False
     preflight = st.session_state.get("emir_db_preflight")
     if isinstance(preflight, pd.DataFrame):
         summary_state = str(preflight.iloc[0]["state"])
-        if summary_state == "HEALTHY_EMIR_DATABASE_V8":
+        if summary_state == "HEALTHY_EMIR_DATABASE_V9":
             st.success(summary_state)
         else:
             st.warning(summary_state)
@@ -394,18 +403,18 @@ preflight = st.session_state.get("emir_db_preflight")
 if not isinstance(preflight, pd.DataFrame):
     preflight = test_connection(db_config)
     st.session_state["emir_db_preflight"] = preflight
-preflight_state = str(preflight.iloc[0].get("state", "")) if not preflight.empty else "DATABASE_NOT_READY_V7"
-job_tables_ready = preflight_state == "HEALTHY_EMIR_DATABASE_V8"
+preflight_state = str(preflight.iloc[0].get("state", "")) if not preflight.empty else "DATABASE_NOT_READY_V9"
+job_tables_ready = preflight_state == "HEALTHY_EMIR_DATABASE_V9"
 if not job_tables_ready:
     if preflight_state == "DATABASE_UNREACHABLE_OR_RESOURCE_EXHAUSTED":
         st.error(
             "Database Supabase sedang tidak menerima koneksi / resource exhausted. "
-            "Ini BUKAN bukti schema v8 hilang. Pulihkan health database terlebih dahulu; "
+            "Ini BUKAN bukti schema v9 hilang. Pulihkan health database terlebih dahulu; "
             "jangan menjalankan migration ulang selama database belum menerima koneksi."
         )
     else:
         st.error(
-            "Resumable scan belum melihat schema v8 lengkap/berizin (`cak_scan_jobs`, `cak_scan_job_chunks`, dan `cak_research_memory`). "
+            "Resumable scan belum melihat schema v9 lengkap/berizin (`cak_scan_jobs`, `cak_scan_job_chunks`, dan `cak_research_memory`). "
             "Periksa detail preflight; lakukan migration/permission repair hanya bila table memang missing atau permission gagal."
         )
     safe_dataframe(preflight, width="stretch", hide_index=True)
@@ -684,7 +693,7 @@ with tab_top3:
         start_new_scan_job(auto_continue=True)
     st.caption(
         "Execution Research Top 3 adalah radar timing/flow untuk riset dan tidak identik dengan kandidat modal riil. Final Score = Emir Conviction Score; "
-        "flow dan silent accumulation tetap diberi label proxy bila direct broker data tidak tersedia."
+        f"flow/silent accumulation dan Smart Money Cost Basis {SMART_MONEY_COST_BASIS_VERSION} tetap diberi label proxy bila direct broker data tidak tersedia."
     )
     if top3.empty:
         st.warning("Belum ada kandidat yang layak masuk Top 3. Scanner tidak memaksakan saham reject atau data-integrity block.")
@@ -715,7 +724,9 @@ with tab_radar:
     columns = [
         "ticker", "company_name", "sector", "emir_decision_state", "action", "emir_lifecycle",
         "market_structure_mode", "next_leader_universe_rank", "next_leader_score", "next_leader_state", "dashboard_universe_rank", "emir_final_score", "emir_conviction_score", "emir_evidence_coverage_pct",
-        "broker_inventory_score", "dashboard_flow_score", "dashboard_silent_accum_score", "smart_money_score", "narrative_score", "story_runway_score",
+        "broker_inventory_score", "estimated_smart_money_cost", "estimated_smart_money_cost_low", "estimated_smart_money_cost_high",
+        "smart_money_cost_distance_pct", "smart_money_cost_state", "smart_money_cost_confidence_pct", "smart_money_cost_evidence_type",
+        "dashboard_flow_score", "dashboard_silent_accum_score", "smart_money_score", "narrative_score", "story_runway_score",
         "sector_rrg_state", "retail_adoption_stage", "idx_integrity_state", "execution_capacity_state",
         "distribution_score", "crowding_score", "real_money_gate_state", "real_money_candidate", "real_money_entry_candidate", "real_money_candidate_score", "real_money_ready", "real_money_block_reasons", "risk_flags",
     ]
@@ -750,6 +761,8 @@ with tab_thesis:
 with tab_flow:
     columns = [
         "ticker", "broker_inventory_score", "broker_inventory_coverage_pct", "broker_inventory_shift_state",
+        "estimated_smart_money_cost", "estimated_smart_money_cost_low", "estimated_smart_money_cost_high",
+        "smart_money_cost_distance_pct", "smart_money_cost_state", "smart_money_cost_confidence_pct", "smart_money_cost_evidence_type",
         "holder_persistence_score", "inventory_dryness_score", "retail_exit_score",
         "retail_cannibalisation_risk", "fund_like_flow_score", "jumbo_crossing_score", "defended_level",
         "smart_money_score", "absorption_score", "up_value_ratio20_pct", "close_acceptance20_pct",
@@ -891,6 +904,8 @@ with tab_chart:
             for key in (
                 "emir_decision_state", "emir_lifecycle", "market_structure_mode", "thesis_statement",
                 "why_now", "what_must_happen_next", "thesis_invalidation", "defended_level",
+                "estimated_smart_money_cost", "estimated_smart_money_cost_low", "estimated_smart_money_cost_high",
+                "smart_money_cost_distance_pct", "smart_money_cost_state", "smart_money_cost_confidence_pct", "smart_money_cost_evidence_type",
                 "trigger_provenance", "trim_state", "risk_flags",
             )
         })
