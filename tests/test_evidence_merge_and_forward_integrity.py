@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 
 from future_fundamental import calculate_future_fundamental
-from resumable_scan import _merge_evidence_profile_maps
+from resumable_scan import _bridge_verified_ownership_free_float_to_integrity, _merge_evidence_profile_maps
 
 
 def _base_context():
@@ -53,6 +53,39 @@ def test_ticker_name_mine_is_not_a_forward_project_event():
     ])
     out = calculate_future_fundamental(
         ticker="MINE.JK", events=events, narrative=narrative,
+        fundamental=fundamental, ownership=ownership, sector=sector,
+        as_of="2026-08-14T00:00:00Z",
+    )
+    assert out["future_forward_event_count"] == 0
+    assert out["future_verified_forward_event_count"] == 0
+    assert out["future_official_forward_event_count"] == 0
+
+
+def test_ticker_name_wapo_does_not_become_purchase_order_evidence():
+    narrative, fundamental, ownership, sector = _base_context()
+    events = pd.DataFrame([
+        {
+            "ticker": "WAPO.JK",
+            "published_at": "2026-06-30T00:00:00Z",
+            "title": "IDX Official Financial Statement WAPO 2026-06-30",
+            "summary": "Official IDX XBRL filing; revenue and earnings update",
+            "category": "EARNINGS_CONVERSION",
+            "source_verified": True,
+            "source_tier": "OFFICIAL",
+        },
+        {
+            "ticker": "WAPO.JK",
+            "published_at": "2026-06-03T00:00:00Z",
+            "title": "KSEI corporate action: Proxy Voting",
+            "summary": "WAPO status Active",
+            "category": "CORPORATE_ACTION",
+            "event_role": "ADMINISTRATIVE_CORPORATE_ACTION",
+            "source_verified": True,
+            "source_tier": "OFFICIAL",
+        },
+    ])
+    out = calculate_future_fundamental(
+        ticker="WAPO.JK", events=events, narrative=narrative,
         fundamental=fundamental, ownership=ownership, sector=sector,
         as_of="2026-08-14T00:00:00Z",
     )
@@ -115,6 +148,32 @@ def test_direct_ownership_does_not_destroy_ksei_context_coverage():
     assert "KSEI_REGISTRATION_PROXY_NOT_FREE_FLOAT" in merged["ownership_provenance_state"]
 
 
+def test_disjoint_ownership_evidence_coverage_is_unioned_without_double_counting_integrity():
+    auto = {
+        "MARK.JK": {
+            "ownership_coverage_pct": 33.8,
+            "total_shares_ksei": 3_800_000_310,
+            "local_pct_ksei": 80.0,
+            "foreign_pct_ksei": 20.0,
+            "ownership_provenance_state": "KSEI_REGISTRATION_PROXY_NOT_FREE_FLOAT",
+        }
+    }
+    direct = {
+        "MARK.JK": {
+            "ownership_coverage_pct": 15.0,
+            "effective_free_float_pct": 19.73,
+            "ownership_provenance_state": "DIRECT_SOURCE_VERIFIED",
+        }
+    }
+    merged = _merge_evidence_profile_maps(
+        auto, direct,
+        coverage_key="ownership_coverage_pct",
+        provenance_key="ownership_provenance_state",
+        coverage_mode="union_disjoint",
+    )["MARK.JK"]
+    assert merged["ownership_coverage_pct"] == 48.8
+
+
 def test_direct_integrity_cannot_clear_existing_hard_block():
     auto = {
         "TEST.JK": {
@@ -144,3 +203,58 @@ def test_direct_integrity_cannot_clear_existing_hard_block():
     assert merged["idx_integrity_hard_block"] is True
     assert "SUSPENSION_TRUE_VERIFIED" in merged["idx_integrity_block_reasons"]
     assert merged["idx_integrity_coverage_pct"] == 60.0
+
+
+def test_verified_free_float_bridges_exactly_one_integrity_dimension():
+    ownership = {
+        "MARK.JK": {
+            "effective_free_float_pct": 19.73,
+            "ownership_provenance_state": "DIRECT_SOURCE_VERIFIED+KSEI_REGISTRATION_PROXY_NOT_FREE_FLOAT",
+        }
+    }
+    integrity = {
+        "MARK.JK": {
+            "idx_integrity_coverage_pct": 42.9,
+            "idx_integrity_hard_block": False,
+            "idx_integrity_block_reasons": "NONE",
+            "idx_integrity_caution_flags": "CRITICAL_IDX_FIELDS_UNKNOWN_NOT_VERIFIED",
+            "regulatory_free_float_pct": np.nan,
+            "regulatory_free_float_verification_state": "UNKNOWN_NOT_VERIFIED",
+            "hsc_verification_state": "UNKNOWN_NOT_VERIFIED",
+            "full_call_auction_verification_state": "UNKNOWN_NOT_VERIFIED",
+            "uma_verification_state": "UNKNOWN_NOT_VERIFIED",
+            "sanctions_verification_state": "UNKNOWN_NOT_VERIFIED",
+        }
+    }
+    out = _bridge_verified_ownership_free_float_to_integrity(ownership, integrity)["MARK.JK"]
+    assert out["regulatory_free_float_pct"] == 19.73
+    assert out["idx_integrity_coverage_pct"] == 57.2
+    assert out["idx_integrity_hard_block"] is False
+    assert out["hsc_verification_state"] == "UNKNOWN_NOT_VERIFIED"
+    assert out["full_call_auction_verification_state"] == "UNKNOWN_NOT_VERIFIED"
+    assert out["uma_verification_state"] == "UNKNOWN_NOT_VERIFIED"
+    assert out["sanctions_verification_state"] == "UNKNOWN_NOT_VERIFIED"
+
+
+def test_extreme_low_verified_free_float_hard_blocks_without_inventing_other_regulatory_states():
+    ownership = {
+        "LOW.JK": {
+            "effective_free_float_pct": 6.0,
+            "ownership_provenance_state": "DIRECT_SOURCE_VERIFIED",
+        }
+    }
+    integrity = {
+        "LOW.JK": {
+            "idx_integrity_coverage_pct": 42.9,
+            "idx_integrity_hard_block": False,
+            "idx_integrity_block_reasons": "NONE",
+            "idx_integrity_caution_flags": "NONE",
+            "regulatory_free_float_pct": np.nan,
+            "regulatory_free_float_verification_state": "UNKNOWN_NOT_VERIFIED",
+            "hsc_verification_state": "UNKNOWN_NOT_VERIFIED",
+        }
+    }
+    out = _bridge_verified_ownership_free_float_to_integrity(ownership, integrity)["LOW.JK"]
+    assert out["idx_integrity_hard_block"] is True
+    assert "EXTREME_LOW_FREE_FLOAT" in out["idx_integrity_block_reasons"]
+    assert out["hsc_verification_state"] == "UNKNOWN_NOT_VERIFIED"
