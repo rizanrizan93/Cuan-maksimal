@@ -56,6 +56,7 @@ from persistent_cache import (
 )
 from research_memory import build_research_memory_rows, persist_verify_research_memory
 from future_fundamental import calculate_future_fundamental, future_fundamental_evidence_frame
+from persistent_direct_evidence import load_verified_direct_evidence
 from free_tier_storage import prune_scan_history_best_effort
 
 from top3_dashboard import enrich_dashboard_scores, select_top3, select_next_leaders
@@ -800,7 +801,13 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
     sector_map = context["sector_map"]
     benchmark_freshness = context["benchmark_freshness"]
 
+    persistent_direct = load_verified_direct_evidence(
+        config, universe["ticker"].tolist(), as_of=now
+    ) if config.ready else {}
     manual_events = normalize_manual_events(_frame(settings.get("manual_events")))
+    persisted_forward_events = normalize_manual_events(
+        persistent_direct.get("official_forward_events", pd.DataFrame())
+    )
     ksei_events = ksei_actions_to_events(ksei_actions, as_of=now)
     official_events=[]
     if isinstance(official_fundamental_frame, pd.DataFrame) and not official_fundamental_frame.empty:
@@ -817,7 +824,7 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
                 "category":"EARNINGS_CONVERSION", "collection_provider":"IDX_OFFICIAL_XBRL", "source_verified":True,
             })
     official_events_frame=pd.DataFrame(official_events)
-    event_frames = [frame for frame in (manual_events, online_events, ksei_events, official_events_frame) if isinstance(frame, pd.DataFrame) and not frame.empty]
+    event_frames = [frame for frame in (persisted_forward_events, manual_events, online_events, ksei_events, official_events_frame) if isinstance(frame, pd.DataFrame) and not frame.empty]
     all_events = pd.concat(event_frames, ignore_index=True, sort=False) if event_frames else pd.DataFrame()
     if not all_events.empty:
         all_events["ticker"] = all_events["ticker"].map(normalize_ticker)
@@ -831,10 +838,16 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
     ownership_auto_map, integrity_auto_map = ksei_profiles_to_maps(ksei_profiles, ksei_actions, as_of=now)
     integrity_auto_map = apply_regulatory_event_overlay(integrity_auto_map, all_events, as_of=now)
 
-    raw_broker = _frame(settings.get("manual_broker"))
-    raw_ownership = _frame(settings.get("manual_ownership"))
-    raw_orderbook = _frame(settings.get("manual_orderbook"))
-    raw_idx_integrity = _frame(settings.get("manual_idx_integrity"))
+    def _merge_persisted_manual(key: str, setting_key: str) -> pd.DataFrame:
+        persisted = persistent_direct.get(key, pd.DataFrame()) if isinstance(persistent_direct, Mapping) else pd.DataFrame()
+        manual = _frame(settings.get(setting_key))
+        frames = [frame for frame in (persisted, manual) if isinstance(frame, pd.DataFrame) and not frame.empty]
+        return pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
+
+    raw_broker = _merge_persisted_manual("broker", "manual_broker")
+    raw_ownership = _merge_persisted_manual("ownership", "manual_ownership")
+    raw_orderbook = _merge_persisted_manual("orderbook", "manual_orderbook")
+    raw_idx_integrity = _merge_persisted_manual("idx_integrity", "manual_idx_integrity")
     manual_outcomes = _frame(settings.get("manual_outcomes"))
     persisted_outcomes = load_verified_outcome_memory(config) if config.ready else pd.DataFrame()
     outcome_frames = [frame for frame in (persisted_outcomes, manual_outcomes) if isinstance(frame, pd.DataFrame) and not frame.empty]
@@ -938,8 +951,9 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
     ]
 
     chunk_audit = _chunk_audits(config, scan_id)
+    persistent_direct_audit = persistent_direct.get("audit", pd.DataFrame()) if isinstance(persistent_direct, Mapping) else pd.DataFrame()
     audit_frames = [frame for frame in (
-        chunk_audit, ohlcv_load_audit, benchmark_load_audit, ksei_load_audit, news_load_audit, fundamental_load_audit, official_fundamental_load_audit,
+        chunk_audit, ohlcv_load_audit, benchmark_load_audit, ksei_load_audit, news_load_audit, fundamental_load_audit, official_fundamental_load_audit, persistent_direct_audit,
     ) if isinstance(frame, pd.DataFrame) and not frame.empty]
     provider_audit = pd.concat(audit_frames, ignore_index=True, sort=False) if audit_frames else pd.DataFrame()
     provider_audit = pd.concat([provider_audit, pd.DataFrame([{
