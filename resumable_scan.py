@@ -147,6 +147,73 @@ def _truthy(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on", "verified"}
 
 
+def _evidence_value_present(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    try:
+        missing = pd.isna(value)
+        if isinstance(missing, (bool, np.bool_)):
+            return not bool(missing)
+    except Exception:
+        pass
+    return True
+
+
+def _merge_evidence_profile_maps(
+    base_map: Mapping[str, Mapping[str, Any]] | None,
+    direct_map: Mapping[str, Mapping[str, Any]] | None,
+    *,
+    coverage_key: str,
+    provenance_key: str,
+    hard_block_key: str | None = None,
+    reason_key: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Non-destructive evidence merge for autonomous + direct profiles.
+
+    Verified direct fields win where they are actually observed. Missing fields
+    retain the autonomous public context. Coverage cannot decrease merely because
+    a narrower but higher-tier direct row arrived. Safety hard blocks are OR'ed,
+    never cleared by a partial direct disclosure.
+    """
+    base_map = dict(base_map or {})
+    direct_map = dict(direct_map or {})
+    output: dict[str, dict[str, Any]] = {}
+    for ticker in sorted(set(base_map) | set(direct_map)):
+        base = dict(base_map.get(ticker) or {})
+        direct = dict(direct_map.get(ticker) or {})
+        merged = dict(base)
+        for key, value in direct.items():
+            if _evidence_value_present(value):
+                merged[key] = value
+        base_cov = pd.to_numeric(pd.Series([base.get(coverage_key)]), errors="coerce").iloc[0]
+        direct_cov = pd.to_numeric(pd.Series([direct.get(coverage_key)]), errors="coerce").iloc[0]
+        base_cov = float(base_cov) if np.isfinite(base_cov) else 0.0
+        direct_cov = float(direct_cov) if np.isfinite(direct_cov) else 0.0
+        merged[coverage_key] = round(max(base_cov, direct_cov), 1)
+        base_prov = str(base.get(provenance_key) or "").strip()
+        direct_prov = str(direct.get(provenance_key) or "").strip()
+        if base_prov and direct_prov and base_prov != direct_prov:
+            merged[provenance_key] = f"{direct_prov}+{base_prov}"
+        elif direct_prov:
+            merged[provenance_key] = direct_prov
+        elif base_prov:
+            merged[provenance_key] = base_prov
+        if hard_block_key:
+            merged[hard_block_key] = bool(base.get(hard_block_key, False)) or bool(direct.get(hard_block_key, False))
+        if reason_key:
+            reasons: list[str] = []
+            for source in (base.get(reason_key), direct.get(reason_key)):
+                for token in str(source or "").split("|"):
+                    token = token.strip()
+                    if token and token.upper() != "NONE" and token not in reasons:
+                        reasons.append(token)
+            merged[reason_key] = " | ".join(reasons) if reasons else "NONE"
+        output[ticker] = merged
+    return output
+
+
 def normalize_manual_events(frame: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "ticker", "published_at", "title", "summary", "publisher", "url", "source_tier",
@@ -860,9 +927,16 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
             if dedupe:
                 raw_outcomes = raw_outcomes.drop_duplicates(dedupe, keep="last")
     broker_map = {**broker_proxy_map, **aggregate_broker_summary(raw_broker)}
-    ownership_map = {**ownership_auto_map, **parse_ownership(raw_ownership)}
+    ownership_map = _merge_evidence_profile_maps(
+        ownership_auto_map, parse_ownership(raw_ownership),
+        coverage_key="ownership_coverage_pct", provenance_key="ownership_provenance_state",
+    )
     orderbook_map = {**orderbook_proxy_map, **parse_orderbook_evidence(raw_orderbook)}
-    idx_integrity_map = {**integrity_auto_map, **parse_idx_integrity(raw_idx_integrity, as_of=now)}
+    idx_integrity_map = _merge_evidence_profile_maps(
+        integrity_auto_map, parse_idx_integrity(raw_idx_integrity, as_of=now),
+        coverage_key="idx_integrity_coverage_pct", provenance_key="idx_integrity_provenance_state",
+        hard_block_key="idx_integrity_hard_block", reason_key="idx_integrity_block_reasons",
+    )
     outcome_calibration_map = build_outcome_calibration(raw_outcomes)
     direct_evidence = combine_direct_evidence(raw_broker, raw_ownership, raw_orderbook, raw_idx_integrity)
     autonomous_evidence = autonomous_evidence_frame(ksei_profiles, ksei_actions, fundamental_proxy_frame, broker_proxy_map, orderbook_proxy_map, now, official_fundamentals=official_fundamental_frame)

@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 
-FUTURE_FUNDAMENTAL_VERSION = "1.0.1-evidence-confidence-penalty"
+FUTURE_FUNDAMENTAL_VERSION = "1.0.2-forward-event-integrity"
 
 PROJECT_TERMS = (
     "project", "proyek", "expansion", "ekspansi", "capacity", "kapasitas", "plant", "pabrik",
@@ -55,6 +55,34 @@ def _event_text(row: Mapping[str, Any]) -> str:
     return " ".join(str(row.get(key) or "") for key in ("title", "summary", "category")).lower()
 
 
+def _event_matches_terms(row: Mapping[str, Any], terms: tuple[str, ...]) -> bool:
+    """Match forward terms without turning ticker/company identity into a catalyst.
+
+    Administrative corporate actions and backward-looking earnings filings are
+    evidence for other scanner layers, not forward project/contract evidence.
+    The bare ticker is stripped before term matching so symbols such as MINE do
+    not become a mining-project event merely because the symbol appears in a
+    title or KSEI summary.
+    """
+    category = str(row.get("category") or "").strip().upper()
+    role = str(row.get("event_role") or "").strip().upper()
+    if role == "ADMINISTRATIVE_CORPORATE_ACTION" or category in {"EARNINGS_CONVERSION", "CORPORATE_ACTION"}:
+        return False
+    text = _event_text(row)
+    ticker = str(row.get("ticker") or "").strip().lower()
+    if ticker.endswith(".jk"):
+        ticker = ticker[:-3]
+    if ticker:
+        text = re.sub(rf"(?<![a-z0-9]){re.escape(ticker)}(?![a-z0-9])", " ", text)
+    for raw_term in terms:
+        term = str(raw_term or "").strip().lower()
+        if not term:
+            continue
+        if re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", text):
+            return True
+    return False
+
+
 def _weighted_observed(components: list[tuple[float, float, float]]) -> tuple[float, float]:
     """Return observed quality and fixed-denominator evidence coverage."""
     total_weight = sum(weight for _, weight, _ in components if weight > 0)
@@ -83,7 +111,7 @@ def _event_bucket(events: pd.DataFrame | None, terms: tuple[str, ...], as_of: An
     for _, series in events.iterrows():
         row = series.to_dict()
         text = _event_text(row)
-        if not any(term in text for term in terms):
+        if not _event_matches_terms(row, terms):
             continue
         published = pd.to_datetime(row.get("published_at") or row.get("event_date"), errors="coerce", utc=True)
         age_days = max(0.0, (now - published).total_seconds() / 86400.0) if pd.notna(published) else 120.0
@@ -128,7 +156,7 @@ def _forward_event_stats(events: pd.DataFrame | None, as_of: Any = None) -> dict
     for _, series in events.iterrows():
         row = series.to_dict()
         text = _event_text(row)
-        if not any(term in text for term in terms):
+        if not _event_matches_terms(row, terms):
             continue
         key = (str(row.get("title") or ""), str(row.get("url") or ""), str(row.get("published_at") or row.get("event_date") or ""))
         if key in seen:
