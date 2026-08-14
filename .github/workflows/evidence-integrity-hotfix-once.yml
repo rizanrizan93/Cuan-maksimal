@@ -28,7 +28,9 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
       - name: Apply evidence integrity fixes
-        run: python tools/apply_evidence_coverage_integrity_fix.py
+        run: |
+          python tools/apply_evidence_coverage_integrity_fix.py
+          python tools/fix_evidence_merge_numeric.py
       - name: Compile and focused regression
         run: |
           python -m py_compile future_fundamental.py resumable_scan.py
