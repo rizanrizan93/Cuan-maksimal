@@ -218,6 +218,55 @@ def _merge_evidence_profile_maps(
     return output
 
 
+def _bridge_verified_ownership_free_float_to_integrity(
+    ownership_map: Mapping[str, Mapping[str, Any]] | None,
+    integrity_map: Mapping[str, Mapping[str, Any]] | None,
+) -> dict[str, dict[str, Any]]:
+    """Reuse only verified direct free-float as one IDX-integrity dimension.
+
+    Ownership and IDX-integrity are separate pillars, but a directly sourced issuer
+    free-float disclosure is valid evidence for the integrity layer's free-float field.
+    The bridge never infers HSC/FCA/UMA/sanctions or a clean regulatory state.
+    """
+    ownership_map = dict(ownership_map or {})
+    output = {ticker: dict(payload or {}) for ticker, payload in dict(integrity_map or {}).items()}
+    dimension_pct = 100.0 / 7.0
+    for ticker, ownership in ownership_map.items():
+        provenance = str(ownership.get("ownership_provenance_state") or "")
+        if "DIRECT_SOURCE_VERIFIED" not in provenance:
+            continue
+        raw_ff = ownership.get("effective_free_float_pct")
+        if not _evidence_value_present(raw_ff):
+            raw_ff = ownership.get("reported_free_float_pct")
+        ff = pd.to_numeric(pd.Series([raw_ff]), errors="coerce").iloc[0]
+        if not np.isfinite(ff) or ff < 0 or ff > 100:
+            continue
+        current = dict(output.get(ticker) or {})
+        existing_ff = pd.to_numeric(pd.Series([current.get("regulatory_free_float_pct")]), errors="coerce").iloc[0]
+        state = str(current.get("regulatory_free_float_verification_state") or "UNKNOWN_NOT_VERIFIED")
+        already_verified = bool(np.isfinite(existing_ff) and state != "UNKNOWN_NOT_VERIFIED")
+        if not already_verified:
+            current["regulatory_free_float_pct"] = round(float(ff), 2)
+            current["regulatory_free_float_verification_state"] = "VERIFIED_FROM_DIRECT_OWNERSHIP_SOURCE"
+            base_cov = pd.to_numeric(pd.Series([current.get("idx_integrity_coverage_pct")]), errors="coerce").iloc[0]
+            base_cov = float(base_cov) if np.isfinite(base_cov) else 0.0
+            current["idx_integrity_coverage_pct"] = round(min(100.0, base_cov + dimension_pct), 1)
+
+        caution = [token.strip() for token in str(current.get("idx_integrity_caution_flags") or "").split("|") if token.strip() and token.strip().upper() != "NONE"]
+        reasons = [token.strip() for token in str(current.get("idx_integrity_block_reasons") or "").split("|") if token.strip() and token.strip().upper() != "NONE"]
+        if ff < 7.5:
+            if "EXTREME_LOW_FREE_FLOAT" not in reasons:
+                reasons.append("EXTREME_LOW_FREE_FLOAT")
+            current["idx_integrity_hard_block"] = True
+        elif ff < 15.0 and "FREE_FLOAT_BELOW_15PCT" not in caution:
+            caution.append("FREE_FLOAT_BELOW_15PCT")
+        current["idx_integrity_block_reasons"] = " | ".join(reasons) if reasons else "NONE"
+        current["idx_integrity_caution_flags"] = " | ".join(caution) if caution else "NONE"
+        current["idx_integrity_free_float_bridge_state"] = "DIRECT_OWNERSHIP_FREE_FLOAT_REUSED_NO_REGULATORY_INFERENCE"
+        output[ticker] = current
+    return output
+
+
 def normalize_manual_events(frame: pd.DataFrame) -> pd.DataFrame:
     columns = [
         "ticker", "published_at", "title", "summary", "publisher", "url", "source_tier",
@@ -942,6 +991,7 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
         coverage_key="idx_integrity_coverage_pct", provenance_key="idx_integrity_provenance_state",
         hard_block_key="idx_integrity_hard_block", reason_key="idx_integrity_block_reasons",
     )
+    idx_integrity_map = _bridge_verified_ownership_free_float_to_integrity(ownership_map, idx_integrity_map)
     outcome_calibration_map = build_outcome_calibration(raw_outcomes)
     direct_evidence = combine_direct_evidence(raw_broker, raw_ownership, raw_orderbook, raw_idx_integrity)
     autonomous_evidence = autonomous_evidence_frame(ksei_profiles, ksei_actions, fundamental_proxy_frame, broker_proxy_map, orderbook_proxy_map, now, official_fundamentals=official_fundamental_frame)
