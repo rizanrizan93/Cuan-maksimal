@@ -54,7 +54,7 @@ from persistent_cache import (
     build_market_feature_cache_row,
     persist_verify_cache_bundle,
 )
-from research_memory import build_research_memory_rows, persist_verify_research_memory
+from research_memory import build_research_memory_rows, persist_verify_research_memory, load_replayable_narrative_events
 from future_fundamental import calculate_future_fundamental, future_fundamental_evidence_frame
 from persistent_direct_evidence import load_verified_direct_evidence
 from free_tier_storage import prune_scan_history_best_effort
@@ -869,6 +869,9 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
         persist_verify_cache_bundle(config, scan_id=scan_id, ohlcv_rows=[], source_rows=fallback_feature_rows)
     ksei_profiles, ksei_actions, ksei_load_audit = load_cached_ksei(config, shortlist)
     online_events, news_load_audit = load_cached_news(config, shortlist)
+    persisted_narrative_events = load_replayable_narrative_events(
+        config, shortlist, as_of=now, limit_per_ticker=6, max_age_days=540
+    ) if config.ready else pd.DataFrame()
     fundamental_proxy_frame, fundamental_load_audit = load_cached_fundamentals(config, shortlist)
     official_limit = max(1, int(settings.get("official_fundamental_limit") or 400))
     official_tickers = shortlist[:official_limit]
@@ -944,7 +947,7 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
                 "category":"EARNINGS_CONVERSION", "collection_provider":"IDX_OFFICIAL_XBRL", "source_verified":True,
             })
     official_events_frame=pd.DataFrame(official_events)
-    event_frames = [frame for frame in (persisted_forward_events, manual_events, online_events, ksei_events, official_events_frame) if isinstance(frame, pd.DataFrame) and not frame.empty]
+    event_frames = [frame for frame in (persisted_forward_events, manual_events, online_events, ksei_events, official_events_frame, persisted_narrative_events) if isinstance(frame, pd.DataFrame) and not frame.empty]
     all_events = pd.concat(event_frames, ignore_index=True, sort=False) if event_frames else pd.DataFrame()
     if not all_events.empty:
         all_events["ticker"] = all_events["ticker"].map(normalize_ticker)

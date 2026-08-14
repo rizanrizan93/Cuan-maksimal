@@ -260,4 +260,62 @@ def load_latest_research_memory(config: DatabaseConfig, tickers: list[str], fami
             output[ticker].append(row)
     return output
 
-__all__ = ["build_research_memory_rows", "persist_verify_research_memory", "load_latest_research_memory"]
+def load_replayable_narrative_events(
+    config: DatabaseConfig,
+    tickers: list[str],
+    *,
+    as_of: Any = None,
+    limit_per_ticker: int = 6,
+    max_age_days: int = 540,
+) -> pd.DataFrame:
+    """Replay bounded raw narrative evidence from durable research memory.
+
+    Only raw event payloads are replayed. Derived score snapshots are never fed
+    back into scoring, which prevents circular coverage inflation. Current-scan
+    events retain precedence because the caller appends this frame last and
+    deduplicates by ticker/title/url. Future-dated observations and very old
+    memories are excluded; source verification is preserved, never promoted.
+    """
+    if not config.ready or not tickers:
+        return pd.DataFrame()
+    memory = load_latest_research_memory(
+        config, tickers, "NARRATIVE_EVENT", limit_per_ticker=max(1, int(limit_per_ticker))
+    )
+    now = pd.Timestamp.now(tz="UTC") if as_of is None else pd.Timestamp(as_of)
+    now = now.tz_localize("UTC") if now.tzinfo is None else now.tz_convert("UTC")
+    rows: list[dict[str, Any]] = []
+    for ticker in tickers:
+        for item in memory.get(str(ticker), []):
+            payload = item.get("payload")
+            if not isinstance(payload, Mapping):
+                continue
+            row = dict(payload)
+            observed = pd.to_datetime(
+                row.get("published_at") or row.get("event_date") or item.get("observed_at"),
+                errors="coerce", utc=True,
+            )
+            if pd.isna(observed):
+                continue
+            age_days = (now - observed).total_seconds() / 86400.0
+            if age_days < -1.0 or age_days > max(1, int(max_age_days)):
+                continue
+            row["ticker"] = str(row.get("ticker") or ticker)
+            row["published_at"] = observed
+            row.setdefault("source_verified", bool(item.get("source_verified", False)))
+            if not row.get("source_tier") and bool(item.get("official_source", False)):
+                row["source_tier"] = "OFFICIAL"
+            row["research_memory_replayed"] = True
+            row["research_memory_content_sha256"] = str(item.get("content_sha256") or "")
+            row["research_memory_original_provider"] = str(item.get("provider") or "")
+            row["collection_provider"] = "PERSISTED_RESEARCH_MEMORY"
+            rows.append(row)
+    if not rows:
+        return pd.DataFrame()
+    frame = pd.DataFrame(rows)
+    dedupe = [column for column in ("ticker", "title", "url") if column in frame.columns]
+    if dedupe:
+        frame = frame.drop_duplicates(dedupe, keep="first")
+    return frame.reset_index(drop=True)
+
+
+__all__ = ["build_research_memory_rows", "persist_verify_research_memory", "load_latest_research_memory", "load_replayable_narrative_events"]
