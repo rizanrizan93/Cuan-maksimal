@@ -65,7 +65,7 @@ def test_missing_forward_evidence_penalty_preserves_cross_sectional_discriminati
     assert high["future_fundamental_score"] > low["future_fundamental_score"]
     assert high["future_fundamental_score"] != 55.0
     assert low["future_fundamental_score"] != 55.0
-    assert high["future_fundamental_version"] == "1.0.1-evidence-confidence-penalty"
+    assert high["future_fundamental_version"] == "1.0.2-forward-event-integrity"
 
 
 def test_benchmark_freshness_accepts_index_only_fast_cache_references():
