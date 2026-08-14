@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 
-FUTURE_FUNDAMENTAL_VERSION = "1.0.0"
+FUTURE_FUNDAMENTAL_VERSION = "1.0.1-evidence-confidence-penalty"
 
 PROJECT_TERMS = (
     "project", "proyek", "expansion", "ekspansi", "capacity", "kapasitas", "plant", "pabrik",
@@ -113,7 +113,6 @@ def _event_bucket(events: pd.DataFrame | None, terms: tuple[str, ...], as_of: An
         "official": official_count,
         "latest_days": min(item[1] for item in hits),
     }
-
 
 
 
@@ -269,14 +268,22 @@ def calculate_future_fundamental(
     verified_forward_count = int(forward_stats["verified"])
     official_forward_count = int(forward_stats["official"])
     flags: list[str] = [*funding_flags, *confirmation_flags]
+
+    # Missing or unverified forward evidence is a confidence problem, not a reason
+    # to collapse otherwise-different issuers onto an identical hard-cap score.
+    # Coverage already carries the fixed-denominator evidence penalty; this
+    # multiplier applies a second, continuous conviction discount while retaining
+    # cross-sectional discrimination from sector, balance-sheet and business data.
+    forward_evidence_multiplier = 1.0
     if forward_event_count == 0:
         flags.append("NO_FORWARD_PROJECT_OR_CONTRACT_EVIDENCE")
-        if np.isfinite(score):
-            score = min(score, 55.0)
+        forward_evidence_multiplier = 0.82
     elif verified_forward_count == 0:
         flags.append("FORWARD_EVIDENCE_PUBLIC_UNVERIFIED")
-        if np.isfinite(score):
-            score = min(score, 65.0)
+        forward_evidence_multiplier = 0.92
+    if np.isfinite(score):
+        score = _clip(score * forward_evidence_multiplier)
+
     if "CONTRADICTED_OR_NEGATIVE" in str(narrative.get("narrative_state") or ""):
         flags.append("FORWARD_NARRATIVE_CONTRADICTED")
         if np.isfinite(score):
