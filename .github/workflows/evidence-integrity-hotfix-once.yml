@@ -1,0 +1,46 @@
+name: Emir evidence coverage integrity hotfix once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/evidence-integrity-hotfix-once.yml'
+
+permissions:
+  contents: write
+
+env:
+  PYTHONPATH: ${{ github.workspace }}
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      - name: Apply evidence integrity fixes
+        run: python tools/apply_evidence_coverage_integrity_fix.py
+      - name: Compile and focused regression
+        run: |
+          python -m py_compile future_fundamental.py resumable_scan.py
+          pytest -q tests/test_evidence_merge_and_forward_integrity.py tests/test_v1917_data_integrity.py tests/test_persistent_direct_evidence.py
+      - name: Commit production patch
+        run: |
+          if git diff --quiet -- future_fundamental.py resumable_scan.py; then
+            echo 'No production patch needed'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '4189824+github-actions[bot]@users.noreply.github.com'
+          git add future_fundamental.py resumable_scan.py
+          git commit -m 'Fix forward evidence classification and non-destructive direct evidence merge'
+          git push origin HEAD:main
