@@ -2,7 +2,7 @@ name: Emir production hardening
 
 on:
   push:
-    branches: [codex/production-hardening-20260813]
+    branches: [main, codex/production-hardening-20260813, fix/emir-data-integrity-20260814]
   workflow_dispatch:
 
 permissions:
@@ -25,7 +25,9 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
       - name: Compile critical modules
-        run: python -m py_compile app.py free_tier_storage.py future_fundamental.py persistence.py resumable_scan.py autonomous_enrichment.py narrative_flow_engine.py
+        run: python -m py_compile app.py free_tier_storage.py future_fundamental.py persistence.py resumable_scan.py scan_jobs.py data_providers.py autonomous_enrichment.py narrative_flow_engine.py
+      - name: Data-integrity regression
+        run: pytest -q tests/test_v1917_data_integrity.py
       - name: New hardening regression
         run: pytest -q tests/test_v1916_storage_outcome_hardening.py
       - name: Current integrity suite
