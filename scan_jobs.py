@@ -160,9 +160,10 @@ def create_scan_job(
     # Remove old terminal jobs/chunks before allocating another resumable job.
     prune_scan_history_best_effort(config, keep_scan_runs=2, keep_terminal_jobs=2, exclude_scan_id=str(scan_id))
     now = _now_iso()
+    universe_hash_value = universe_hash(records)
     payload = [{
         "scan_id": str(scan_id),
-        "universe_hash": universe_hash(records),
+        "universe_hash": universe_hash_value,
         "scanner_version": JOB_VERSION,
         "status": "CREATED",
         "current_stage": "BENCHMARK",
@@ -186,13 +187,26 @@ def create_scan_job(
     }]
     if not config.ready:
         return _job_from_row(payload[0]) or payload[0]
-    response = _request(
-        config,
-        "POST",
-        "cak_scan_jobs",
-        params={"on_conflict": "scan_id"},
-        payload=payload,
-    )
+    try:
+        response = _request(
+            config,
+            "POST",
+            "cak_scan_jobs",
+            params={"on_conflict": "scan_id"},
+            payload=payload,
+        )
+    except Exception:
+        # The database enforces one active job per universe + scanner version.
+        # If two Streamlit sessions race, the loser reuses the winner rather
+        # than leaving a duplicate orphan or surfacing a transient 409.
+        existing = find_latest_job(
+            config,
+            universe_hash_value=universe_hash_value,
+            include_completed=False,
+        )
+        if existing and str(existing.get("scanner_version") or "") == JOB_VERSION:
+            return existing
+        raise
     rows = response.json()
     if not isinstance(rows, list) or len(rows) != 1:
         raise RuntimeError("cak_scan_jobs create did not return exactly one row.")
