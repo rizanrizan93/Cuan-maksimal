@@ -1,0 +1,43 @@
+name: Emir master evidence schema hotfix once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/master-evidence-schema-hotfix-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r requirements.txt && pip install pytest
+      - name: Apply schema patch
+        run: python tools/apply_master_evidence_schema_patch.py
+      - name: Compile and regression
+        env:
+          PYTHONPATH: .
+        run: |
+          python -m py_compile persistence.py persistent_direct_evidence.py resumable_scan.py
+          python -m pytest -q tests/test_persistent_direct_evidence.py tests/test_v1917_data_integrity.py tests/test_v1916_storage_outcome_hardening.py
+      - name: Commit production patch
+        run: |
+          if git diff --quiet -- persistence.py; then
+            echo 'No production patch needed'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '4189824+github-actions[bot]@users.noreply.github.com'
+          git add persistence.py
+          git commit -m 'Require durable direct evidence master in Emir database'
+          git push origin HEAD:main
