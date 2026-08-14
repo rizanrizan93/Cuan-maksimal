@@ -1,0 +1,46 @@
+name: Emir research memory replay hotfix once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/research-memory-replay-hotfix-once.yml'
+
+permissions:
+  contents: write
+
+env:
+  PYTHONPATH: ${{ github.workspace }}
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      - name: Apply durable narrative replay fix
+        run: python tools/apply_research_memory_replay_fix.py
+      - name: Compile and regression
+        run: |
+          python -m py_compile research_memory.py resumable_scan.py
+          pytest -q tests/test_research_memory_replay.py tests/test_evidence_merge_and_forward_integrity.py tests/test_persistent_direct_evidence.py tests/test_v1917_data_integrity.py
+      - name: Commit production patch
+        run: |
+          if git diff --quiet -- research_memory.py resumable_scan.py; then
+            echo 'No production patch needed'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '4189824+github-actions[bot]@users.noreply.github.com'
+          git add research_memory.py resumable_scan.py
+          git commit -m 'Replay bounded durable narrative evidence into scoring'
+          git push origin HEAD:main
