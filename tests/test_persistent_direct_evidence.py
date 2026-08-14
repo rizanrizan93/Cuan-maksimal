@@ -11,21 +11,22 @@ def test_loader_keeps_only_verified_current_rows(monkeypatch):
     now = pd.Timestamp("2026-08-14T07:00:00Z")
     rows = [
         {
-            "evidence_id": "a", "scan_id": "REF", "ticker": "MARK.JK",
+            "evidence_key": "a", "source_scan_id": "REF", "ticker": "MARK.JK",
             "evidence_type": "OWNERSHIP_FREE_FLOAT", "observed_at": "2026-03-27T00:00:00Z",
-            "source_verified": True,
+            "source_verified": True, "revoked": False, "freshness_policy_days": 180,
             "payload": {"free_float_pct": 19.73, "source_url": "https://issuer.example/pubex.pdf"},
         },
         {
-            "evidence_id": "b", "scan_id": "REF", "ticker": "MARK.JK",
+            "evidence_key": "b", "source_scan_id": "REF", "ticker": "MARK.JK",
             "evidence_type": "OFFICIAL_FORWARD_EVENT", "observed_at": "2026-06-19T00:00:00Z",
-            "source_verified": True,
+            "source_verified": True, "revoked": False, "freshness_policy_days": 540,
             "payload": {"title": "capacity expansion", "url": "https://issuer.example/news", "source_tier": "ISSUER"},
         },
         {
-            "evidence_id": "c", "scan_id": "REF", "ticker": "OLD.JK",
+            "evidence_key": "c", "source_scan_id": "REF", "ticker": "OLD.JK",
             "evidence_type": "IDX_INTEGRITY_REGULATORY", "observed_at": "2025-01-01T00:00:00Z",
-            "source_verified": True, "payload": {"listing_board": "MAIN"},
+            "source_verified": True, "revoked": False, "freshness_policy_days": 60,
+            "payload": {"listing_board": "MAIN"},
         },
     ]
 
@@ -37,20 +38,73 @@ def test_loader_keeps_only_verified_current_rows(monkeypatch):
     out = pde.load_verified_direct_evidence(DummyConfig(), ["MARK.JK", "OLD.JK"], as_of=now)
     assert len(out["ownership"]) == 1
     assert float(out["ownership"].iloc[0]["free_float_pct"]) == 19.73
+    assert out["ownership"].iloc[0]["persistent_evidence_store"] == "cak_persistent_direct_evidence"
     assert len(out["official_forward_events"]) == 1
     assert out["idx_integrity"].empty
     assert set(out["audit"]["status"]) == {"PERSISTED_VERIFIED_CURRENT", "PERSISTED_VERIFIED_STALE"}
 
 
-def test_unverified_rows_are_never_promoted(monkeypatch):
+def test_unverified_and_revoked_rows_are_never_promoted(monkeypatch):
+    rows = [
+        {
+            "evidence_key": "x", "source_scan_id": "REF", "ticker": "TEST.JK",
+            "evidence_type": "OWNERSHIP_FREE_FLOAT", "observed_at": "2026-08-01T00:00:00Z",
+            "source_verified": False, "revoked": False, "freshness_policy_days": 180,
+            "payload": {"free_float_pct": 10.0},
+        },
+        {
+            "evidence_key": "y", "source_scan_id": "REF", "ticker": "TEST.JK",
+            "evidence_type": "OWNERSHIP_FREE_FLOAT", "observed_at": "2026-08-02T00:00:00Z",
+            "source_verified": True, "revoked": True, "freshness_policy_days": 180,
+            "payload": {"free_float_pct": 11.0},
+        },
+    ]
+
     class Response:
         def json(self):
-            return [{
-                "evidence_id": "x", "scan_id": "REF", "ticker": "TEST.JK",
-                "evidence_type": "OWNERSHIP_FREE_FLOAT", "observed_at": "2026-08-01T00:00:00Z",
-                "source_verified": False, "payload": {"free_float_pct": 10.0},
-            }]
+            return rows
 
     monkeypatch.setattr(pde, "_request", lambda *args, **kwargs: Response())
     out = pde.load_verified_direct_evidence(DummyConfig(), ["TEST.JK"], as_of="2026-08-14T00:00:00Z")
     assert out["ownership"].empty
+
+
+def test_empty_master_does_not_fall_back_to_legacy(monkeypatch):
+    calls = []
+
+    class Response:
+        def json(self):
+            return []
+
+    def fake_request(config, method, table, **kwargs):
+        calls.append(table)
+        return Response()
+
+    monkeypatch.setattr(pde, "_request", fake_request)
+    out = pde.load_verified_direct_evidence(DummyConfig(), ["TEST.JK"], as_of="2026-08-14T00:00:00Z")
+    assert calls == ["cak_persistent_direct_evidence"]
+    assert out["ownership"].empty
+
+
+def test_master_schema_failure_uses_legacy_fallback(monkeypatch):
+    legacy_rows = [{
+        "evidence_id": "legacy-1", "scan_id": "OLD", "ticker": "TEST.JK",
+        "evidence_type": "OWNERSHIP_FREE_FLOAT", "observed_at": "2026-08-01T00:00:00Z",
+        "source_verified": True,
+        "payload": {"free_float_pct": 12.5, "source_url": "https://issuer.example/ownership"},
+    }]
+
+    class Response:
+        def json(self):
+            return legacy_rows
+
+    def fake_request(config, method, table, **kwargs):
+        if table == "cak_persistent_direct_evidence":
+            raise RuntimeError("table not found")
+        return Response()
+
+    monkeypatch.setattr(pde, "_request", fake_request)
+    out = pde.load_verified_direct_evidence(DummyConfig(), ["TEST.JK"], as_of="2026-08-14T00:00:00Z")
+    assert len(out["ownership"]) == 1
+    assert out["ownership"].iloc[0]["persistent_evidence_store"] == "cak_direct_evidence"
+    assert "MASTER_UNAVAILABLE_LEGACY_FALLBACK" in set(out["audit"]["status"])
