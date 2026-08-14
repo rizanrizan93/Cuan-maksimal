@@ -459,7 +459,6 @@ def fetch_ohlcv_window(
         except Exception as exc:
             yf_error = f"{type(exc).__name__}: {exc}"
     return FetchResult(symbol, pd.DataFrame(), "NONE", "ERROR", f"direct={direct_error}; yfinance={yf_error}")
-
 def fetch_ohlcv(ticker: str, period: str = "5y", *, completed_only: bool = True, now: Any = None, direct_retries: int = 3) -> FetchResult:
     symbol = normalize_ticker(ticker)
     try:
@@ -571,10 +570,14 @@ def assess_benchmark_freshness(benchmark: pd.DataFrame, universe_frames: dict[st
     Calendar age alone is insufficient around weekends/holidays. A benchmark that is older
     than the dominant universe session is stale relative to the scan and must not drive
     market-regime or relative-strength calculations as fully current evidence.
+
+    Fast-cache references may intentionally carry only a DatetimeIndex. Those frames have
+    valid session evidence even though pandas reports ``DataFrame.empty`` for zero-column
+    frames, so freshness eligibility is based on index cardinality rather than .empty.
     """
     universe_dates: list[pd.Timestamp] = []
     for frame in (universe_frames or {}).values():
-        if isinstance(frame, pd.DataFrame) and not frame.empty:
+        if isinstance(frame, pd.DataFrame) and len(frame.index) > 0:
             value = pd.to_datetime(frame.index.max(), errors="coerce")
             if pd.notna(value):
                 universe_dates.append(pd.Timestamp(value).tz_localize(None).normalize())
@@ -608,7 +611,6 @@ def assess_benchmark_freshness(benchmark: pd.DataFrame, universe_frames: dict[st
         "benchmark_usable": usable,
         "universe_reference_count": len(universe_dates),
     }
-
 def _normalize_news_item(item: dict[str, Any], ticker: str, source: str = "YAHOO_NEWS") -> dict[str, Any] | None:
     content = item.get("content") if isinstance(item.get("content"), dict) else item
     title = str(content.get("title") or "").strip()
