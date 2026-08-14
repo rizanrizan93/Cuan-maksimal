@@ -2,7 +2,8 @@ name: KSEI integrity hotfix once
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
       - '.github/workflows/ksei-integrity-hotfix-once.yml'
 
@@ -12,86 +13,23 @@ permissions:
 jobs:
   patch:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
-      - name: Patch KSEI profile integrity
-        shell: bash
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path('autonomous_enrichment.py')
-          text = path.read_text(encoding='utf-8')
-
-          old_profile = '''    profile["registered_amount"] = _number(_label_value(text, "Current Amount"))
-    profile["total_shares"] = _number(_label_value(text, "Number of Securities"))
-    profile["local_pct"] = _number(_label_value(text, "Local Percentage"))
-    profile["foreign_pct"] = _number(_label_value(text, "Foreign Percentage"))
-    scripless_match = re.search(r"As of\\s+[^\\n]+\\s*\\n\\s*([\\d.,]+)%\\s+Scripless", text, flags=re.IGNORECASE)
-'''
-          new_profile = '''    profile["registered_amount"] = _number(_label_value(text, "Current Amount"))
-    profile["total_shares"] = _number(_label_value(text, "Number of Securities"))
-    profile["local_pct"] = _number(_label_value(text, "Local Percentage"))
-    profile["foreign_pct"] = _number(_label_value(text, "Foreign Percentage"))
-
-    # KSEI sometimes returns a generic HTML shell for an unresolved /lc/{ticker}
-    # route.  That shell can contain headings such as "ISIN Code", zero shares
-    # and an UNKNOWN status.  Non-empty HTML is therefore not sufficient proof
-    # that the issuer profile itself was resolved.
-    placeholder_names = {"", "isin code", "security name", "issuer", "undefined", "null", "none"}
-    company_identity = _clean_text(profile.get("company_name")).lower()
-    security_status = _clean_text(profile.get("security_status")).upper()
-    total_shares = _finite(profile.get("total_shares"), np.nan)
-    profile_verified = bool(
-        text
-        and company_identity not in placeholder_names
-        and np.isfinite(total_shares)
-        and total_shares > 0
-        and security_status
-        and not security_status.startswith("UNKNOWN")
-    )
-    profile["ksei_source_verified"] = profile_verified
-    if not profile_verified:
-        profile["profile_integrity_state"] = "PLACEHOLDER_OR_UNRESOLVED_PROFILE"
-        if company_identity in placeholder_names:
-            profile["company_name"] = ""
-        if not np.isfinite(total_shares) or total_shares <= 0:
-            profile["total_shares"] = np.nan
-        registered = _finite(profile.get("registered_amount"), np.nan)
-        if not np.isfinite(registered) or registered <= 0:
-            profile["registered_amount"] = np.nan
-
-    scripless_match = re.search(r"As of\\s+[^\\n]+\\s*\\n\\s*([\\d.,]+)%\\s+Scripless", text, flags=re.IGNORECASE)
-'''
-          if old_profile not in text:
-              raise SystemExit('KSEI profile patch anchor not found; refusing unsafe rewrite')
-          text = text.replace(old_profile, new_profile, 1)
-
-          old_ok = '''            profile, actions = parse_ksei_profile_html(symbol, response.text, source_url=url)
-            ok = bool(profile.get("company_name") or profile.get("sector") or np.isfinite(_finite(profile.get("total_shares"))))
-'''
-          new_ok = '''            profile, actions = parse_ksei_profile_html(symbol, response.text, source_url=url)
-            ok = bool(profile.get("ksei_source_verified", False))
-'''
-          if old_ok not in text:
-              raise SystemExit('KSEI fetch patch anchor not found; refusing unsafe rewrite')
-          text = text.replace(old_ok, new_ok, 1)
-          path.write_text(text, encoding='utf-8')
-          PY
-          python -m py_compile autonomous_enrichment.py
-          grep -q 'PLACEHOLDER_OR_UNRESOLVED_PROFILE' autonomous_enrichment.py
-          grep -q 'ok = bool(profile.get("ksei_source_verified", False))' autonomous_enrichment.py
-      - name: Commit hotfix
-        shell: bash
+      - name: Apply integrity patch
+        run: python tools/apply_ksei_integrity_hotfix.py
+      - name: Compile patched module
+        run: python -m py_compile autonomous_enrichment.py
+      - name: Commit patched parser
         run: |
           if git diff --quiet -- autonomous_enrichment.py; then
-            echo 'No changes to commit'
+            echo "No changes to commit"
             exit 0
           fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add autonomous_enrichment.py
-          git commit -m 'Harden KSEI placeholder profile validation'
+          git commit -m "Harden KSEI placeholder profile validation"
           git push origin HEAD:main
