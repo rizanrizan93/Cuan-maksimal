@@ -1,3 +1,4 @@
+# one-shot patch runner; safe to rerun because helpers are idempotent
 name: Emir evidence coverage integrity hotfix once
 
 on:
