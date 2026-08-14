@@ -25,9 +25,9 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
       - name: Compile critical modules
-        run: python -m py_compile app.py free_tier_storage.py future_fundamental.py persistence.py resumable_scan.py scan_jobs.py data_providers.py autonomous_enrichment.py narrative_flow_engine.py
+        run: python -m py_compile app.py free_tier_storage.py future_fundamental.py persistence.py persistent_direct_evidence.py resumable_scan.py scan_jobs.py data_providers.py autonomous_enrichment.py narrative_flow_engine.py
       - name: Data-integrity regression
-        run: pytest -q tests/test_v1917_data_integrity.py
+        run: pytest -q tests/test_v1917_data_integrity.py tests/test_persistent_direct_evidence.py
       - name: New hardening regression
         run: pytest -q tests/test_v1916_storage_outcome_hardening.py
       - name: Current integrity suite
