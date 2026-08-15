@@ -13,7 +13,7 @@ import os
 
 from persistence import DatabaseConfig, _request
 
-FREE_TIER_STORAGE_VERSION = "1.9.21-terminal-maintenance-latency"
+FREE_TIER_STORAGE_VERSION = "1.9.22-outcome-reconciliation-integrity"
 TERMINAL_JOB_STATUSES = {
     "COMPLETED", "COMPLETED_PARTIAL_PERSISTENCE", "CANCELLED", "FAILED",
 }

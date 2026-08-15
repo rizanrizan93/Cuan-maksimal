@@ -568,7 +568,7 @@ def verify_scan(
 ) -> pd.DataFrame:
     columns = [
         "bridge_version", "schema_version", "database_mode", "database_key_type", "write_policy", "state", "table",
-        "scan_id", "rows_attempted", "rows_written", "rows_verified", "verification_pct", "detail",
+        "scan_id", "rows_attempted", "rows_written", "rows_verified", "rows_observed", "verification_pct", "detail",
     ]
     base = database_status(config)
     if not config.ready:
@@ -581,6 +581,7 @@ def verify_scan(
                 "rows_attempted": 0,
                 "rows_written": 0,
                 "rows_verified": 0,
+                "rows_observed": 0,
                 "verification_pct": 0.0,
                 "detail": "Database is not configured.",
             }],
@@ -588,38 +589,57 @@ def verify_scan(
         )
 
     checks = [
-        ("cak_scan_runs", 1),
-        ("cak_radar_snapshots", expected_radar),
-        ("cak_narrative_events", expected_events),
-        ("cak_provider_audit", expected_provider_audit),
-        ("cak_direct_evidence", expected_direct_evidence),
-        ("cak_autonomous_evidence", expected_autonomous_evidence),
-        ("cak_outcome_memory", expected_outcomes),
+        ("cak_scan_runs", 1, "EXACT"),
+        ("cak_radar_snapshots", expected_radar, "EXACT"),
+        ("cak_narrative_events", expected_events, "EXACT"),
+        ("cak_provider_audit", expected_provider_audit, "EXACT"),
+        ("cak_direct_evidence", expected_direct_evidence, "EXACT"),
+        ("cak_autonomous_evidence", expected_autonomous_evidence, "EXACT"),
+        # Outcome memory is shared, durable calibration state. Bounded terminal
+        # maintenance may seed additional rows for this scan_id after the primary
+        # result write. Extra rows are therefore valid; fewer than expected is not.
+        ("cak_outcome_memory", expected_outcomes, "AT_LEAST"),
     ]
     reports: list[dict[str, Any]] = []
-    total_expected = total_verified_exact = 0
-    all_exact = True
-    for table, expected in checks:
+    total_expected = total_verified_contract = total_observed = 0
+    all_contracts_met = True
+    for table, expected, policy in checks:
         total_expected += expected
         try:
-            verified = _count_rows_for_scan(config, table, scan_id)
-            exact = verified == expected
-            all_exact = all_exact and exact
-            total_verified_exact += verified if exact else 0
-            pct = 100.0 if exact else 100.0 * min(verified, expected) / max(expected, 1)
+            observed = _count_rows_for_scan(config, table, scan_id)
+            total_observed += observed
+            exact = observed == expected
+            contract_met = exact or (policy == "AT_LEAST" and observed >= expected)
+            all_contracts_met = all_contracts_met and contract_met
+            credited = expected if contract_met else 0
+            total_verified_contract += credited
+            pct = 100.0 if contract_met else 100.0 * min(observed, expected) / max(expected, 1)
+            if exact:
+                state = "VERIFIED_EXACT"
+                detail = "Exact persisted scan_id row count found."
+            elif contract_met:
+                state = "VERIFIED_AT_LEAST_EXPECTED"
+                detail = (
+                    f"Expected at least {expected}; found {observed}. "
+                    "Additional shared outcome-memory rows are valid maintenance output."
+                )
+            else:
+                state = "ROW_COUNT_MISMATCH"
+                detail = f"Expected {expected}, found {observed}."
             reports.append({
                 **base,
-                "state": "VERIFIED_EXACT" if exact else "ROW_COUNT_MISMATCH",
+                "state": state,
                 "table": table,
                 "scan_id": scan_id,
                 "rows_attempted": expected,
                 "rows_written": expected,
-                "rows_verified": verified,
+                "rows_verified": credited if contract_met else observed,
+                "rows_observed": observed,
                 "verification_pct": round(pct, 1),
-                "detail": "Exact persisted scan_id row count found." if exact else f"Expected {expected}, found {verified}.",
+                "detail": detail,
             })
         except Exception as exc:
-            all_exact = False
+            all_contracts_met = False
             reports.append({
                 **base,
                 "state": "READBACK_FAILED",
@@ -628,12 +648,13 @@ def verify_scan(
                 "rows_attempted": expected,
                 "rows_written": 0,
                 "rows_verified": 0,
+                "rows_observed": 0,
                 "verification_pct": 0.0,
                 "detail": str(exc),
             })
 
-    pct = 100.0 if all_exact else 100.0 * total_verified_exact / max(total_expected, 1)
-    state = "VERIFIED_ALL_TABLES" if all_exact else "PARTIAL_READBACK"
+    pct = 100.0 if all_contracts_met else 100.0 * total_verified_contract / max(total_expected, 1)
+    state = "VERIFIED_ALL_TABLES" if all_contracts_met else "PARTIAL_READBACK"
     reports.insert(0, {
         **base,
         "state": state,
@@ -641,11 +662,12 @@ def verify_scan(
         "scan_id": scan_id,
         "rows_attempted": total_expected,
         "rows_written": total_expected,
-        "rows_verified": total_expected if all_exact else total_verified_exact,
+        "rows_verified": total_expected if all_contracts_met else total_verified_contract,
+        "rows_observed": total_observed,
         "verification_pct": round(pct, 1),
         "detail": (
-            f"Exact row counts verified across 7 tables ({total_expected}/{total_expected})."
-            if all_exact else "One or more tables failed exact row-count readback."
+            f"Required row-count contracts verified across 7 tables ({total_expected}/{total_expected})."
+            if all_contracts_met else "One or more tables failed the required row-count readback contract."
         ),
     })
     return pd.DataFrame(reports, columns=columns)
@@ -804,7 +826,7 @@ def finalize_scan_persistence(
     if full:
         requested = "VERIFIED_COMMITTED"
         state = "SCAN_COMPLETED_FULL_PERSISTENCE"
-        detail = "All expected scan rows were written and exact-count verified."
+        detail = "All expected scan rows were written and their row-count contracts were verified."
     elif written > 0:
         requested = "PARTIAL_PERSISTENCE"
         state = "SCAN_COMPLETED_PARTIAL_PERSISTENCE"

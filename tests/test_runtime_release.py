@@ -47,7 +47,7 @@ def test_stale_loaded_modules_are_reloaded_in_dependency_order(monkeypatch):
         },
     )
 
-    assert expected.startswith("1.9.21-")
+    assert expected.startswith("1.9.22-")
     assert calls == [
         "narrative_flow_engine",
         "future_fundamental",

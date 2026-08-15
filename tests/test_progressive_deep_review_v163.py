@@ -95,6 +95,54 @@ def test_database_transfer_summary_reconciles_all_result_tables():
     }
 
 
+def test_database_transfer_summary_separates_outcome_maintenance_observations():
+    result = {
+        "radar": pd.DataFrame([{"ticker": "A.JK"}]),
+        "expected_events": 0,
+        "expected_provider_audit": 0,
+        "expected_direct_evidence": 0,
+        "expected_autonomous_evidence": 0,
+        "expected_outcomes": 0,
+    }
+    counts = {
+        "cak_scan_runs": 1,
+        "cak_radar_snapshots": 1,
+        "cak_narrative_events": 0,
+        "cak_provider_audit": 0,
+        "cak_direct_evidence": 0,
+        "cak_autonomous_evidence": 0,
+        "cak_outcome_memory": 0,
+    }
+    result["write_report"] = pd.DataFrame([
+        {"table": table, "rows_written": count, "state": "WRITTEN" if count else "EMPTY_EXPECTED"}
+        for table, count in counts.items()
+    ])
+    result["verification"] = pd.DataFrame([
+        {
+            "table": table,
+            "rows_verified": count,
+            "rows_observed": 180 if table == "cak_outcome_memory" else count,
+            "state": "VERIFIED_AT_LEAST_EXPECTED" if table == "cak_outcome_memory" else "VERIFIED_EXACT",
+        }
+        for table, count in counts.items()
+    ])
+
+    summary = build_database_transfer_summary(result)
+    outcome = summary.loc[summary["table"].eq("cak_outcome_memory")].iloc[0]
+    totals = database_transfer_totals(summary)
+
+    assert outcome["expected_rows"] == 0
+    assert outcome["verified_rows"] == 0
+    assert outcome["observed_rows"] == 180
+    assert outcome["transfer_state"] == "VERIFIED_WITH_MAINTENANCE_ROWS"
+    assert totals == {
+        "expected": 2,
+        "written": 2,
+        "verified": 2,
+        "state": "DATABASE_RESULT_TRANSFER_VERIFIED",
+    }
+
+
 def test_dashboard_has_one_click_scan_and_rescan_buttons():
     source = (ROOT / "app.py").read_text()
     assert "🚀 Mulai Scan" in source

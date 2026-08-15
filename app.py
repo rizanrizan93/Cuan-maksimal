@@ -684,7 +684,7 @@ verified_db_rows = int(transfer_totals["verified"])
 persistence_cols = st.columns(3)
 persistence_cols[0].metric("DB expected rows", expected_db_rows)
 persistence_cols[1].metric("DB written rows", written_db_rows)
-persistence_cols[2].metric("DB exact verified", verified_db_rows)
+persistence_cols[2].metric("DB contract verified", verified_db_rows)
 research_mem_verify = result.get("research_memory_verification", pd.DataFrame())
 if isinstance(research_mem_verify, pd.DataFrame) and not research_mem_verify.empty:
     rv = research_mem_verify.iloc[0]

@@ -1337,6 +1337,7 @@ def load_persisted_scan_result(config: DatabaseConfig, scan_id: str) -> dict[str
             "rows_attempted": count,
             "rows_written": count,
             "rows_verified": count,
+            "rows_observed": count,
             "verification_pct": 100.0,
             "detail": "Persisted rows loaded exactly by scan_id pagination.",
         }

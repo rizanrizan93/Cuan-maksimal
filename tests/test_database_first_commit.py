@@ -235,3 +235,64 @@ def test_exact_readback_uses_postgrest_content_range_above_1000(monkeypatch):
 def test_exact_count_parser_falls_back_for_test_doubles_without_headers():
     response = FakeResponse([{"scan_id": "x"}, {"scan_id": "x"}])
     assert ps._exact_count_from_response(response) == 2
+
+
+def test_outcome_readback_accepts_post_commit_maintenance_rows(monkeypatch):
+    observed = {
+        "cak_scan_runs": 1,
+        "cak_radar_snapshots": 1,
+        "cak_narrative_events": 0,
+        "cak_provider_audit": 0,
+        "cak_direct_evidence": 0,
+        "cak_autonomous_evidence": 0,
+        "cak_outcome_memory": 180,
+    }
+    monkeypatch.setattr(ps, "_count_rows_for_scan", lambda _config, table, _scan_id: observed[table])
+
+    result = ps.verify_scan(
+        ready_config(),
+        scan_id="scan-maintained-outcomes",
+        expected_radar=1,
+        expected_events=0,
+        expected_provider_audit=0,
+        expected_direct_evidence=0,
+        expected_autonomous_evidence=0,
+        expected_outcomes=0,
+    )
+
+    assert result.iloc[0]["state"] == "VERIFIED_ALL_TABLES"
+    assert result.iloc[0]["rows_verified"] == 2
+    assert result.iloc[0]["rows_observed"] == 182
+    outcome = result.loc[result["table"].eq("cak_outcome_memory")].iloc[0]
+    assert outcome["state"] == "VERIFIED_AT_LEAST_EXPECTED"
+    assert outcome["rows_verified"] == 0
+    assert outcome["rows_observed"] == 180
+
+
+def test_outcome_readback_still_rejects_missing_expected_rows(monkeypatch):
+    observed = {
+        "cak_scan_runs": 1,
+        "cak_radar_snapshots": 1,
+        "cak_narrative_events": 0,
+        "cak_provider_audit": 0,
+        "cak_direct_evidence": 0,
+        "cak_autonomous_evidence": 0,
+        "cak_outcome_memory": 2,
+    }
+    monkeypatch.setattr(ps, "_count_rows_for_scan", lambda _config, table, _scan_id: observed[table])
+
+    result = ps.verify_scan(
+        ready_config(),
+        scan_id="scan-missing-outcomes",
+        expected_radar=1,
+        expected_events=0,
+        expected_provider_audit=0,
+        expected_direct_evidence=0,
+        expected_autonomous_evidence=0,
+        expected_outcomes=3,
+    )
+
+    assert result.iloc[0]["state"] == "PARTIAL_READBACK"
+    outcome = result.loc[result["table"].eq("cak_outcome_memory")].iloc[0]
+    assert outcome["state"] == "ROW_COUNT_MISMATCH"
+    assert outcome["rows_observed"] == 2
