@@ -15,6 +15,13 @@ def _install_integrity_patch(expected: str) -> None:
         return
     patch = importlib.import_module("runtime_integrity_patch")
     patch.install(expected)
+    try:
+        live_forward = importlib.import_module("live_forward_evidence")
+        installer = getattr(live_forward, "install_dashboard_cost_integrity", None)
+        if callable(installer):
+            installer()
+    except Exception:
+        pass
 
 
 def refresh_release_runtime(
