@@ -75,19 +75,28 @@ def _optional_score(value: Any) -> float:
     return float(np.clip(parsed, 0.0, 100.0)) if np.isfinite(parsed) else np.nan
 
 
-def _weighted_with_confidence(values: list[tuple[Any, float]], *, neutral: float = 50.0) -> tuple[float, float, float]:
+def _weighted_with_confidence(
+    values: list[tuple[Any, float] | tuple[Any, float, Any]],
+    *,
+    neutral: float = 50.0,
+) -> tuple[float, float, float]:
     """Aggregate observed quality, then apply missing-data confidence once.
 
     Missing factors are neither negative (0) nor synthetic neutral observations
     (50).  They reduce model coverage; the resulting quality is shrunk once
     toward a neutral prior.  This prevents asymmetric missing-data penalties.
     """
-    possible = sum(weight for _, weight in values if weight > 0)
+    normalized = [
+        (item[0], item[1], 100.0 if len(item) == 2 else _score(item[2], 0.0))
+        for item in values
+    ]
+    possible = sum(weight for _, weight, _ in normalized if weight > 0)
     valid: list[tuple[float, float]] = []
-    for value, weight in values:
+    for value, weight, coverage_pct in normalized:
         parsed = _num(value, np.nan)
-        if np.isfinite(parsed) and weight > 0:
-            valid.append((float(np.clip(parsed, 0.0, 100.0)), weight))
+        effective_weight = weight * coverage_pct / 100.0
+        if np.isfinite(parsed) and effective_weight > 0:
+            valid.append((float(np.clip(parsed, 0.0, 100.0)), effective_weight))
     if possible <= 0 or not valid:
         return float(neutral), float(neutral), 0.0
     observed = sum(weight for _, weight in valid)
@@ -245,6 +254,12 @@ def calculate_next_leader_score(row: Mapping[str, Any]) -> dict[str, Any]:
     structure = _optional_score(row.get("market_structure_score"))
     liquidity = _optional_score(row.get("liquidity_score"))
     ownership = _optional_score(row.get("ownership_score"))
+    narrative_cov = _score(row.get("narrative_coverage_pct"))
+    alignment_cov = _score(row.get("issuer_alignment_coverage_pct"))
+    sector_cov = _score(row.get("sector_context_coverage_pct"))
+    smart_cov = _score(row.get("smart_money_coverage_pct"))
+    inventory_cov = _score(row.get("broker_inventory_coverage_pct"))
+    ownership_cov = _score(row.get("ownership_coverage_pct"))
     momentum, momentum_basis = _business_momentum(row)
 
     bank_like = _is_bank_like(row)
@@ -290,19 +305,19 @@ def calculate_next_leader_score(row: Mapping[str, Any]) -> dict[str, Any]:
     # v1.9.14: future fundamental becomes an explicit business pillar rather than being
     # hidden inside narrative/story scores. Technical/flow remains deliberately small.
     raw, quality_pre_confidence, model_coverage = _weighted_with_confidence([
-        (effective_fundamental if np.isfinite(fundamental_raw) else np.nan, 0.27),
-        (momentum, 0.18),
-        (effective_data_quality if np.isfinite(data_quality_raw) else np.nan, 0.05),
-        (future_ff, 0.15),
-        (story, 0.08),
-        (conversion, 0.07),
-        (alignment, 0.05),
-        (sector, 0.08),
-        (smart, 0.02),
-        (inventory, 0.02),
-        (structure, 0.01),
-        (liquidity, 0.01),
-        (ownership, 0.01),
+        (effective_fundamental if np.isfinite(fundamental_raw) else np.nan, 0.27, fundamental_cov),
+        (momentum, 0.18, fundamental_cov),
+        (effective_data_quality if np.isfinite(data_quality_raw) else np.nan, 0.05, fundamental_cov),
+        (future_ff, 0.15, future_ff_cov),
+        (story, 0.08, narrative_cov),
+        (conversion, 0.07, narrative_cov),
+        (alignment, 0.05, alignment_cov),
+        (sector, 0.08, sector_cov),
+        (smart, 0.02, smart_cov),
+        (inventory, 0.02, inventory_cov),
+        (structure, 0.01, 100.0 if np.isfinite(structure) else 0.0),
+        (liquidity, 0.01, 100.0 if np.isfinite(liquidity) else 0.0),
+        (ownership, 0.01, ownership_cov),
     ])
 
     penalty = 0.0

@@ -148,7 +148,8 @@ def test_app_uses_resumable_jobs_and_best_effort_result_persistence():
     assert "Proses 1 checkpoint" in source
     assert "SCAN_NOT_COMMITTED" not in source
     assert "CACHE_NOT_COMMITTED" not in source
-    assert "HEALTHY_EMIR_DATABASE_V8" in source
+    assert "HEALTHY_EMIR_DATABASE_V9" in source
+    assert "HEALTHY_EMIR_DATABASE_V8" not in source
 
 
 def test_best_effort_publishes_partial_write(monkeypatch):

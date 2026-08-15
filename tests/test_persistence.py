@@ -51,9 +51,9 @@ def test_database_status_contract_v7():
     })
     status = database_status(config)
     assert status["database_mode"] == "SUPABASE_REST"
-    assert status["schema_version"] == "emir_autonomous_schema_v8"
+    assert status["schema_version"] == "emir_autonomous_schema_v9"
     assert status["write_policy"] == "RESUMABLE_CHUNK_CHECKPOINT_PLUS_BEST_EFFORT_RESULTS"
-    assert DATABASE_SCHEMA_VERSION.endswith("v8")
+    assert DATABASE_SCHEMA_VERSION.endswith("v9")
     assert BRIDGE_VERSION == "1.9.1"
 
 

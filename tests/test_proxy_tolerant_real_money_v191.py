@@ -25,7 +25,15 @@ def test_proxy_fundamental_can_score_and_be_manual_candidate():
 
 
 def test_official_direct_path_can_still_be_ready():
-    fundamental={"fundamental_conversion_score":78,"fundamental_coverage_pct":90,"fundamental_data_quality_score":90,"fundamental_official_source_coverage_pct":85,"fundamental_cashflow_state":"IDX_OFFICIAL_YTD_OCF_FCF_AVAILABLE","fundamental_period_freshness_state":"CURRENT_QUARTERLY_PERIOD","fundamental_leverage_risk_state":"BALANCE_SHEET_CAPACITY_OK","fundamental_state":"FUTURE_FUNDAMENTAL_SUPPORTIVE"}
+    fundamental={"fundamental_conversion_score":78,"fundamental_coverage_pct":90,"fundamental_data_quality_score":90,"fundamental_official_source_coverage_pct":85,"fundamental_cashflow_state":"IDX_OFFICIAL_YTD_OCF_FCF_AVAILABLE","fundamental_cashflow_quality_state":"CASHFLOW_POSITIVE_CONVERTING","operating_cash_flow_ttm":220,"free_cash_flow_proxy_ttm":170,"ocf_conversion_ratio":0.82,"fundamental_period_freshness_state":"CURRENT_QUARTERLY_PERIOD","fundamental_growth_consistency_state":"QUARTER_AND_YTD_CONFIRMED","fundamental_leverage_risk_state":"BALANCE_SHEET_CAPACITY_OK","fundamental_state":"FUTURE_FUNDAMENTAL_SUPPORTIVE"}
     row=_base(fundamental)
     assert row["real_money_ready"] is True
     assert row["production_ready"] is True
+
+
+def test_cashflow_availability_label_without_values_never_authorizes_capital():
+    fundamental={"fundamental_conversion_score":78,"fundamental_coverage_pct":90,"fundamental_data_quality_score":90,"fundamental_official_source_coverage_pct":85,"fundamental_cashflow_state":"IDX_OFFICIAL_YTD_OCF_FCF_AVAILABLE","fundamental_period_freshness_state":"CURRENT_QUARTERLY_PERIOD","fundamental_growth_consistency_state":"QUARTER_AND_YTD_CONFIRMED","fundamental_leverage_risk_state":"BALANCE_SHEET_CAPACITY_OK","fundamental_state":"FUTURE_FUNDAMENTAL_SUPPORTIVE"}
+    row=_base(fundamental)
+    assert row["real_money_ready"] is False
+    assert row["production_ready"] is False
+    assert "CASHFLOW_PROXY_OR_MANUAL_VERIFY" in row["real_money_manual_conditions"]

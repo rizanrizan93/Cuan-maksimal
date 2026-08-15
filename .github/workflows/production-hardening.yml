@@ -2,7 +2,9 @@ name: Emir production hardening
 
 on:
   push:
-    branches: [main, codex/production-hardening-20260813, fix/emir-data-integrity-20260814]
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -25,15 +27,11 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
       - name: Compile critical modules
-        run: python -m py_compile app.py free_tier_storage.py future_fundamental.py persistence.py persistent_direct_evidence.py research_memory.py resumable_scan.py scan_jobs.py data_providers.py autonomous_enrichment.py narrative_flow_engine.py
-      - name: Data-integrity and evidence regressions
-        run: pytest -q tests/test_v1917_data_integrity.py tests/test_persistent_direct_evidence.py tests/test_evidence_merge_and_forward_integrity.py tests/test_research_memory_replay.py
-      - name: New hardening regression
-        run: pytest -q tests/test_v1916_storage_outcome_hardening.py
-      - name: Current integrity suite
-        run: |
-          pytest -q tests/test_ui_dataframe_arrow_safe.py tests/test_v194_real_money_calibration.py tests/test_v195_fundamental_freshness_ytd.py tests/test_v196_sector_business_calibration.py tests/test_v197_resumable_universe_integrity.py
-          python validation_v1_9_14_future_db_acceleration.py
+        run: python -m py_compile app.py release_contract.py free_tier_storage.py future_fundamental.py persistence.py persistent_direct_evidence.py research_memory.py resumable_scan.py scan_jobs.py data_providers.py autonomous_enrichment.py narrative_flow_engine.py
+      - name: Full offline regression suite
+        run: pytest -q --disable-socket
+      - name: Current performance contract
+        run: python validation_v1_9_14_future_db_acceleration.py
       - name: Streamlit runtime smoke
         run: |
           streamlit run app.py --server.headless true --server.address 127.0.0.1 --server.port 8501 > /tmp/emir-streamlit.log 2>&1 &

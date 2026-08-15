@@ -686,7 +686,7 @@ with tab_leader:
         )
     else:
         safe_dataframe(next_leaders[[c for c in leader_cols if c in next_leaders.columns]], width="stretch", hide_index=True)
-        st.download_button("Download The Next Leader CSV", next_leaders.to_csv(index=False).encode("utf-8"), "idx_emir_next_leader_v1_9_14.csv", "text/csv")
+        st.download_button("Download The Next Leader CSV", next_leaders.to_csv(index=False).encode("utf-8"), "idx_emir_next_leader.csv", "text/csv")
 
 with tab_top3:
     if st.button("🔄 Scan Ulang dari Dashboard", type="primary", key="top3_dashboard_rescan", width="stretch"):
@@ -710,13 +710,13 @@ with tab_top3:
         dl1.download_button(
             "Download Top 3 report HTML",
             download_html.encode("utf-8"),
-            "idx_emir_execution_research_top3_v1_9_14.html",
+            "idx_emir_execution_research_top3.html",
             "text/html",
         )
         dl2.download_button(
             "Download Top 3 data CSV",
             top3.to_csv(index=False).encode("utf-8"),
-            "idx_emir_execution_research_top3_v1_9_14.csv",
+            "idx_emir_execution_research_top3.csv",
             "text/csv",
         )
 
@@ -734,7 +734,7 @@ with tab_radar:
     st.download_button(
         "Download Emir radar CSV",
         radar.to_csv(index=False).encode("utf-8"),
-        "idx_emir_autonomous_radar_v1_9_14.csv",
+        "idx_emir_autonomous_radar.csv",
         "text/csv",
     )
 
@@ -843,7 +843,7 @@ with tab_real_money:
         st.download_button(
             "Download Real Money Candidate Top 3 CSV",
             real_money_top3.to_csv(index=False).encode("utf-8"),
-            "idx_emir_real_money_top3_v1_9_14.csv",
+            "idx_emir_real_money_top3.csv",
             "text/csv",
         )
     st.divider()
@@ -866,7 +866,7 @@ with tab_real_money:
         ascending = [False, False, False, False][:len(sort_cols)]
         rm = rm.sort_values(sort_cols, ascending=ascending, na_position="last")
     safe_dataframe(rm, width="stretch", hide_index=True)
-    st.download_button("Download Real Money Gate CSV", rm.to_csv(index=False).encode("utf-8"), "idx_emir_real_money_gate_v1_9_14.csv", "text/csv")
+    st.download_button("Download Real Money Gate CSV", rm.to_csv(index=False).encode("utf-8"), "idx_emir_real_money_gate.csv", "text/csv")
 
 with tab_scenario:
     columns = [
@@ -979,7 +979,7 @@ with tab_database:
             local=frame.copy(); local.insert(0,"audit_group",label); db_health_parts.append(local)
     if db_health_parts:
         db_health=pd.concat(db_health_parts,ignore_index=True,sort=False)
-        st.download_button("Download database health v1.9.14", db_health.to_csv(index=False).encode("utf-8"), "idx_emir_database_health_v1_9_14.csv", "text/csv")
+        st.download_button("Download database health", db_health.to_csv(index=False).encode("utf-8"), "idx_emir_database_health.csv", "text/csv")
     st.subheader("Persistent source-cache commit")
     safe_dataframe(result.get("cache_write_report", pd.DataFrame()), width="stretch", hide_index=True)
     st.subheader("Persistent source-cache hash readback")
