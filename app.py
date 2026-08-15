@@ -13,12 +13,17 @@ SCANNER_RELEASE_VERSION, RUNTIME_RELOADED_MODULES = refresh_release_runtime(
     reload_order=(
         "persistence",
         "narrative_flow_engine",
+        "future_fundamental",
+        "top3_dashboard_legacy",
+        "top3_dashboard",
         "scan_jobs",
         "resumable_scan",
     ),
     version_markers={
         "persistence": "SCANNER_VERSION",
         "narrative_flow_engine": "ENGINE_VERSION",
+        "future_fundamental": "SCANNER_VERSION",
+        "top3_dashboard": "SCANNER_VERSION",
         "scan_jobs": "JOB_VERSION",
         "resumable_scan": "PIPELINE_VERSION",
     },
@@ -85,12 +90,16 @@ from persistent_cache import (
 )
 
 from persistence import SCANNER_VERSION as PERSISTENCE_SCANNER_VERSION
+from future_fundamental import SCANNER_VERSION as FUTURE_FUNDAMENTAL_SCANNER_VERSION
 from scan_jobs import JOB_VERSION
 from resumable_scan import PIPELINE_VERSION
+from top3_dashboard import SCANNER_VERSION as DASHBOARD_SCANNER_VERSION
 
 runtime_versions = {
     "app": SCANNER_RELEASE_VERSION,
     "engine": ENGINE_VERSION,
+    "future_fundamental": FUTURE_FUNDAMENTAL_SCANNER_VERSION,
+    "dashboard": DASHBOARD_SCANNER_VERSION,
     "persistence": PERSISTENCE_SCANNER_VERSION,
     "job": JOB_VERSION,
     "pipeline": PIPELINE_VERSION,
