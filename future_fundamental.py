@@ -7,8 +7,10 @@ import re
 import numpy as np
 import pandas as pd
 
+from release_contract import SCANNER_RELEASE_VERSION
 
 FUTURE_FUNDAMENTAL_VERSION = "1.0.3-direct-forward-lineage"
+SCANNER_VERSION = SCANNER_RELEASE_VERSION
 
 PROJECT_TERMS = (
     "project", "proyek", "expansion", "ekspansi", "capacity", "kapasitas", "plant", "pabrik",
@@ -399,4 +401,9 @@ def future_fundamental_evidence_frame(radar: pd.DataFrame | None, observed_at: A
     return pd.DataFrame(rows)
 
 
-__all__ = ["FUTURE_FUNDAMENTAL_VERSION", "calculate_future_fundamental", "future_fundamental_evidence_frame"]
+__all__ = [
+    "FUTURE_FUNDAMENTAL_VERSION",
+    "SCANNER_VERSION",
+    "calculate_future_fundamental",
+    "future_fundamental_evidence_frame",
+]
