@@ -69,6 +69,7 @@ from scan_jobs import (
     record_job_chunk,
     stage_progress,
     update_scan_job,
+    update_scan_job_minimal,
 )
 
 PIPELINE_VERSION = SCANNER_RELEASE_VERSION
@@ -1139,7 +1140,7 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
     terminal_status = "COMPLETED" if persistence_state == "SCAN_COMPLETED_FULL_PERSISTENCE" else "COMPLETED_PARTIAL_PERSISTENCE"
     if not radar_persisted and config.ready:
         terminal_status = "FINALIZE_RETRY_REQUIRED"
-    updated = update_scan_job(config, scan_id, {
+    updated = update_scan_job_minimal(config, scan_id, {
         "status": terminal_status,
         "current_stage": "COMPLETED" if terminal_status != "FINALIZE_RETRY_REQUIRED" else "FINALIZE",
         "current_offset": 0,
@@ -1165,7 +1166,7 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
             if config.ready and len(research_memory_rows) > 0 and not memory_verified_exact
             else ""
         ),
-    })
+    }, base_job=job)
     storage_housekeeping = prune_scan_history_best_effort(
         config, keep_scan_runs=2, keep_terminal_jobs=2, exclude_scan_id=scan_id
     )
