@@ -7,6 +7,29 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from ui_dataframe import streamlit_dataframe as safe_dataframe
+from runtime_release import refresh_release_runtime
+
+SCANNER_RELEASE_VERSION, RUNTIME_RELOADED_MODULES = refresh_release_runtime(
+    reload_order=(
+        "persistence",
+        "narrative_flow_engine",
+        "scan_jobs",
+        "resumable_scan",
+    ),
+    version_markers={
+        "persistence": "SCANNER_VERSION",
+        "narrative_flow_engine": "ENGINE_VERSION",
+        "scan_jobs": "JOB_VERSION",
+        "resumable_scan": "PIPELINE_VERSION",
+    },
+)
+APP_RELEASE_NUMBER = SCANNER_RELEASE_VERSION.split("-", 1)[0]
+
+st.set_page_config(
+    page_title=f"IDX Emir Autonomous Scanner v{APP_RELEASE_NUMBER}",
+    page_icon="🧭",
+    layout="wide",
+)
 
 from data_providers import assess_benchmark_freshness, fetch_many_news, fetch_many_ohlcv, normalize_ticker, parse_universe_frame
 from autonomous_enrichment import (
@@ -61,9 +84,21 @@ from persistent_cache import (
     persist_verify_cache_bundle,
 )
 
+from persistence import SCANNER_VERSION as PERSISTENCE_SCANNER_VERSION
+from scan_jobs import JOB_VERSION
+from resumable_scan import PIPELINE_VERSION
 
-st.set_page_config(page_title="IDX Emir Autonomous Scanner", page_icon="🧭", layout="wide")
-
+runtime_versions = {
+    "app": SCANNER_RELEASE_VERSION,
+    "engine": ENGINE_VERSION,
+    "persistence": PERSISTENCE_SCANNER_VERSION,
+    "job": JOB_VERSION,
+    "pipeline": PIPELINE_VERSION,
+}
+if any(version != SCANNER_RELEASE_VERSION for version in runtime_versions.values()):
+    st.error("Deployment memuat modul dari release yang berbeda; scan dihentikan agar hasil tidak inkonsisten.")
+    st.json(runtime_versions)
+    st.stop()
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def cached_fetch_ohlcv(tickers: tuple[str, ...], period: str, max_workers: int, completed_only: bool):
@@ -289,6 +324,8 @@ st.caption(
     f"Versi {ENGINE_VERSION} · resumable chunked scan · progressive deep review · "
     "hasil dan evidence dipindahkan ke Supabase secara terukur"
 )
+if RUNTIME_RELOADED_MODULES:
+    st.caption("Runtime hot-reload diselaraskan ke satu release contract.")
 st.caption(
     f"Runtime contract: database schema v9 · Smart Money Cost Basis {SMART_MONEY_COST_BASIS_VERSION} · "
     "estimated cost selalu diberi label proxy kecuali direct broker evidence terverifikasi."
