@@ -1,13 +1,6 @@
 from __future__ import annotations
 
-"""Research-only live Future Fundamental discovery for Emir production scans.
-
-Collection coverage and scoring coverage are separate. A successful query with
-no material event is persisted as a completed check, but is not emitted as a
-bullish event. Google News RSS evidence is never promoted to strict official
-quorum; the existing governed evidence path remains authoritative for real-money
-production readiness.
-"""
+"""Research-only live Future Fundamental discovery for Emir production scans."""
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
@@ -20,7 +13,7 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 import requests
 
-LIVE_FORWARD_EVIDENCE_VERSION = "1.0.2-dashboard-placement"
+LIVE_FORWARD_EVIDENCE_VERSION = "1.0.3-entity-match"
 
 _RULES: tuple[tuple[str, tuple[str, ...], float, float], ...] = (
     ("PROJECT_OR_CONTRACT", ("KONTRAK", "CONTRACT", "BACKLOG", "ORDER BOOK", "ORDERBOOK", "OFFTAKE", "TENDER"), 76.0, 82.0),
@@ -43,6 +36,10 @@ def _ticker(value: Any) -> str:
 
 def _clean(value: Any) -> str:
     return re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", " ", str(value or "")))).strip()
+
+
+def _mentions_ticker(title: str, bare: str) -> bool:
+    return bool(re.search(rf"(?<![A-Z0-9]){re.escape(bare.upper())}(?![A-Z0-9])", str(title or "").upper()))
 
 
 def _classify(text: str) -> tuple[str, float, float, int] | None:
@@ -90,20 +87,23 @@ def _one(ticker: str, lookback_days: int, timeout: float) -> tuple[list[dict[str
     cutoff = checked - pd.Timedelta(days=max(7, int(lookback_days)))
     events: list[dict[str, Any]] = []
     publishers: set[str] = set()
-    scanned = 0
+    scanned = matched = 0
     for item in root.findall(".//item")[:20]:
         title = _clean(item.findtext("title"))
-        link = str(item.findtext("link") or "").strip()
-        source_node = item.find("source")
-        publisher = _clean(source_node.text if source_node is not None else "")
         published = _published(item.findtext("pubDate"))
         if pd.notna(published) and published < cutoff:
             continue
         scanned += 1
+        if not _mentions_ticker(title, bare):
+            continue
+        matched += 1
         classified = _classify(title)
         if classified is None:
             continue
         category, materiality, bridge, direction = classified
+        source_node = item.find("source")
+        publisher = _clean(source_node.text if source_node is not None else "")
+        link = str(item.findtext("link") or "").strip()
         if publisher:
             publishers.add(publisher.upper())
         events.append({
@@ -133,6 +133,7 @@ def _one(ticker: str, lookback_days: int, timeout: float) -> tuple[list[dict[str
             "state": "MATERIAL_FORWARD_RESEARCH_EVIDENCE_FOUND",
             "coverage_pct": 100.0,
             "items_scanned": scanned,
+            "entity_matched_items": matched,
             "material_events": len(events),
             "publisher_count": len(publishers),
         }
@@ -141,6 +142,7 @@ def _one(ticker: str, lookback_days: int, timeout: float) -> tuple[list[dict[str
         "state": "FORWARD_CHECK_COMPLETED_NO_MATERIAL_EVENT",
         "coverage_pct": 100.0,
         "items_scanned": scanned,
+        "entity_matched_items": matched,
         "material_events": 0,
         "publisher_count": 0,
     }
@@ -176,7 +178,7 @@ def collect_live_forward_evidence(
 
 
 def install_dashboard_cost_integrity() -> None:
-    """Repair the legacy replace-loop without changing Smart Money Cost values."""
+    """Repair legacy Smart Money Cost placement without changing values."""
     try:
         import top3_dashboard as dashboard
     except Exception:
