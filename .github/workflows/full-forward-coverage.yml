@@ -28,6 +28,7 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import pandas as pd
           from live_forward_evidence import collect_live_forward_evidence
 
           text = Path('tools/idx_400_production_universe_2026-07.txt').read_text()
