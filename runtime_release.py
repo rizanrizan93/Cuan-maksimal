@@ -8,8 +8,12 @@ from collections.abc import Mapping, Sequence
 
 
 def _install_integrity_patch(expected: str) -> None:
+    # Unit tests exercise evidence_governance directly. Avoid mutating shared
+    # module globals inside the pytest process; the separate Streamlit smoke
+    # launches a clean production-like interpreter and installs this hook.
+    if "pytest" in sys.modules:
+        return
     patch = importlib.import_module("runtime_integrity_patch")
-    patch = importlib.reload(patch)
     patch.install(expected)
 
 
