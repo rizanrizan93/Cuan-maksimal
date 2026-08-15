@@ -275,6 +275,38 @@ def update_scan_job(config: DatabaseConfig, scan_id: str, patch: Mapping[str, An
     return _job_from_row(rows[0]) or rows[0]
 
 
+def update_scan_job_minimal(
+    config: DatabaseConfig,
+    scan_id: str,
+    patch: Mapping[str, Any],
+    *,
+    base_job: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Commit a job transition without asking PostgREST to return the JSON-heavy row.
+
+    FINALIZE already has the complete job in memory. Requesting the full row again can
+    exceed the hosted statement timeout while the database is flushing the result and
+    evidence writes. A minimal PATCH makes the terminal transition small and atomic;
+    the locally merged row remains sufficient for the current Streamlit render.
+    """
+    payload = dict(patch)
+    payload["updated_at"] = _now_iso()
+    payload["heartbeat_at"] = payload.get("heartbeat_at") or payload["updated_at"]
+    merged = {**dict(base_job or {}), "scan_id": scan_id, **payload}
+    if not config.ready:
+        return merged
+    _request(
+        config,
+        "PATCH",
+        "cak_scan_jobs",
+        params={"scan_id": f"eq.{scan_id}"},
+        payload=payload,
+        return_rows=False,
+        timeout=20,
+    )
+    return _job_from_row(merged) or merged
+
+
 def record_job_chunk(
     config: DatabaseConfig,
     *,
