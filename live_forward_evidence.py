@@ -20,7 +20,7 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 import requests
 
-LIVE_FORWARD_EVIDENCE_VERSION = "1.0.1"
+LIVE_FORWARD_EVIDENCE_VERSION = "1.0.2-dashboard-placement"
 
 _RULES: tuple[tuple[str, tuple[str, ...], float, float], ...] = (
     ("PROJECT_OR_CONTRACT", ("KONTRAK", "CONTRACT", "BACKLOG", "ORDER BOOK", "ORDERBOOK", "OFFTAKE", "TENDER"), 76.0, 82.0),
@@ -175,4 +175,44 @@ def collect_live_forward_evidence(
     return pd.DataFrame(events), pd.DataFrame(audits)
 
 
-__all__ = ["LIVE_FORWARD_EVIDENCE_VERSION", "collect_live_forward_evidence"]
+def install_dashboard_cost_integrity() -> None:
+    """Repair the legacy replace-loop without changing Smart Money Cost values."""
+    try:
+        import top3_dashboard as dashboard
+    except Exception:
+        return
+    original = getattr(dashboard, "render_top3_dashboard_html", None)
+    if not callable(original) or getattr(original, "__cost_placement_v2__", False):
+        return
+
+    def fixed(top3: pd.DataFrame, *args: Any, **kwargs: Any) -> str:
+        html = original(top3, *args, **kwargs)
+        blocks = re.findall(r'<div class="es-cost-basis">.*?</div>', html, flags=re.DOTALL)
+        if not blocks:
+            return html
+        html = re.sub(r'<div class="es-cost-basis">.*?</div>', "", html, flags=re.DOTALL)
+        markers = (
+            "</div><p>OHLCV PROXY — BUKAN IDENTITAS BROKER</p>",
+            "</div><p>DIRECT BROKER EVIDENCE</p>",
+        )
+        cursor = 0
+        for block in blocks:
+            candidates = [(html.find(marker, cursor), marker) for marker in markers]
+            candidates = [(idx, marker) for idx, marker in candidates if idx >= 0]
+            if not candidates:
+                break
+            index, marker = min(candidates, key=lambda pair: pair[0])
+            replacement = "</div>" + block + marker[len("</div>"):]
+            html = html[:index] + replacement + html[index + len(marker):]
+            cursor = index + len(replacement)
+        return html
+
+    fixed.__cost_placement_v2__ = True
+    fixed.__name__ = getattr(original, "__name__", "render_top3_dashboard_html")
+    fixed.__doc__ = getattr(original, "__doc__", None)
+    setattr(dashboard, "render_top3_dashboard_html", fixed)
+
+
+install_dashboard_cost_integrity()
+
+__all__ = ["LIVE_FORWARD_EVIDENCE_VERSION", "collect_live_forward_evidence", "install_dashboard_cost_integrity"]
