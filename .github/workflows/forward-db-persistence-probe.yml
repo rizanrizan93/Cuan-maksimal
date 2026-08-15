@@ -1,0 +1,95 @@
+name: Emir scoped forward DB persistence probe
+
+on:
+  push:
+    branches: ['test/forward-db-persistence-20260815']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONPATH: ${{ github.workspace }}
+
+jobs:
+  persistence-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Persist and read back forward evidence through scanner cache path
+        env:
+          PROBE_URL: 'https://vbtpwpmkfxzqeuvztcmz.supabase.co'
+          PROBE_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZidHB3cG1rZnh6cWV1dnp0Y216Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY1MzM3MzQsImV4cCI6MjEwMjEwOTczNH0.QpEOPW215Scww_nWi_kz6gZnpPYdACj9qfjuVFKawdU'
+        run: |
+          python - <<'PY'
+          import os
+          import pandas as pd
+          import persistent_cache
+          import runtime_integrity_patch as rip
+          from persistence import DatabaseConfig
+
+          config = DatabaseConfig(
+              enabled=True,
+              url=os.environ['PROBE_URL'],
+              key=os.environ['PROBE_KEY'],
+              schema='public',
+              key_type='LEGACY_SERVICE_ROLE',
+          )
+          now = pd.Timestamp.now(tz='UTC').isoformat()
+          events = pd.DataFrame([{
+              'ticker': 'ZZTESTFF.JK',
+              'published_at': now,
+              'title': 'SCANNER_FORWARD_PERSISTENCE_PROBE',
+              'summary': 'Scoped real-database persistence probe only.',
+              'publisher': 'SCOPED_TEST',
+              'url': 'https://example.com/scoped-probe',
+              'source_tier': 'PUBLIC_RESEARCH',
+              'materiality_score': 76.0,
+              'financial_bridge_score': 82.0,
+              'top_down_catalyst_score': 50.0,
+              'industry_translation_score': 66.0,
+              'issuer_alignment_score': 62.0,
+              'category': 'PROJECT_OR_CONTRACT',
+              'collection_provider': 'SCOPED_REAL_DATABASE_PROBE',
+              'source_verified': False,
+              'entity_match_verified': True,
+              'source_quorum_verified': False,
+              'source_quorum_count': 0,
+              'forward_research_only': True,
+          }])
+          audit = pd.DataFrame([{
+              'ticker': 'ZZTESTFF.JK',
+              'checked_at': now,
+              'provider': 'SCOPED_REAL_DATABASE_PROBE',
+              'state': 'MATERIAL_FORWARD_RESEARCH_EVIDENCE_FOUND',
+              'coverage_pct': 100.0,
+              'material_events': 1,
+              'source_verified': False,
+              'strict_official_quorum': False,
+          }])
+          write, verify = rip._persist_forward_research(
+              config, 'SCOPED_REAL_DATABASE_PROBE', events, audit, persistent_cache
+          )
+          print('WRITE_REPORT')
+          print(write.to_string(index=False))
+          print('VERIFY_REPORT')
+          print(verify.to_string(index=False))
+          if not persistent_cache.cache_commit_succeeded(verify):
+              raise SystemExit('cak_source_cache exact verification failed')
+          loaded, fresh = rip._cached_forward_research(config, ['ZZTESTFF.JK'], persistent_cache)
+          print('READBACK')
+          print(loaded.to_string(index=False))
+          if 'ZZTESTFF.JK' not in fresh:
+              raise SystemExit('FORWARD_RESEARCH cache row not fresh after readback')
+          if loaded.empty or str(loaded.iloc[0].get('title')) != 'SCANNER_FORWARD_PERSISTENCE_PROBE':
+              raise SystemExit('forward event payload did not survive persistence/readback')
+          if bool(loaded.iloc[0].get('source_verified')) is not False:
+              raise SystemExit('research-only evidence was incorrectly promoted during persistence')
+          print('EMIR_REAL_DB_FORWARD_PERSISTENCE=PASS')
+          PY
