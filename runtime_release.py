@@ -8,13 +8,17 @@ from collections.abc import Mapping, Sequence
 
 
 def _install_integrity_patch(expected: str) -> None:
-    # Unit tests exercise evidence_governance directly. Avoid mutating shared
-    # module globals inside the pytest process; the separate Streamlit smoke
-    # launches a clean production-like interpreter and installs this hook.
     if "pytest" in sys.modules:
         return
     patch = importlib.import_module("runtime_integrity_patch")
     patch.install(expected)
+    try:
+        company_patch = importlib.import_module("live_forward_runtime_patch")
+        installer = getattr(company_patch, "install_runtime", None)
+        if callable(installer):
+            installer()
+    except Exception:
+        pass
     try:
         live_forward = importlib.import_module("live_forward_evidence")
         installer = getattr(live_forward, "install_dashboard_cost_integrity", None)
@@ -25,9 +29,7 @@ def _install_integrity_patch(expected: str) -> None:
 
 
 def refresh_release_runtime(
-    *,
-    reload_order: Sequence[str],
-    version_markers: Mapping[str, str],
+    *, reload_order: Sequence[str], version_markers: Mapping[str, str],
 ) -> tuple[str, tuple[str, ...]]:
     importlib.invalidate_caches()
     contract = importlib.import_module("release_contract")
