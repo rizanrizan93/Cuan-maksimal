@@ -5,7 +5,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from email.utils import parsedate_to_datetime
 from html import unescape
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 from urllib.parse import quote_plus
 import re
 import xml.etree.ElementTree as ET
@@ -13,20 +13,21 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 import requests
 
-LIVE_FORWARD_EVIDENCE_VERSION = "1.0.3-entity-match"
+LIVE_FORWARD_EVIDENCE_VERSION = "1.1.0-company-entity"
 
 _RULES: tuple[tuple[str, tuple[str, ...], float, float], ...] = (
-    ("PROJECT_OR_CONTRACT", ("KONTRAK", "CONTRACT", "BACKLOG", "ORDER BOOK", "ORDERBOOK", "OFFTAKE", "TENDER"), 76.0, 82.0),
+    ("PROJECT_OR_CONTRACT", ("KONTRAK", "CONTRACT", "BACKLOG", "ORDER BOOK", "ORDERBOOK", "OFFTAKE", "TENDER", "PESANAN"), 76.0, 82.0),
     ("CAPACITY_OR_EXPANSION", ("EKSPANSI", "EXPANSION", "KAPASITAS", "CAPACITY", "PABRIK", "PLANT", "SMELTER", "COMMISSIONING", "COMMERCIAL OPERATION"), 76.0, 80.0),
     ("GUIDANCE_OR_TARGET", ("GUIDANCE", "TARGET PENDAPATAN", "TARGET REVENUE", "TARGET LABA", "TARGET PROFIT", "TARGET PRODUKSI", "PRODUCTION TARGET"), 72.0, 86.0),
     ("PRODUCT_OR_NEW_MARKET", ("PRODUK BARU", "NEW PRODUCT", "PASAR BARU", "NEW MARKET", "PELUNCURAN", "LAUNCH"), 68.0, 72.0),
     ("STRATEGIC_INVESTOR_OR_MA", ("JOINT VENTURE", " JV ", "AKUISISI", "ACQUISITION", "MERGER", "INVESTOR STRATEGIS", "STRATEGIC INVESTOR"), 82.0, 78.0),
-    ("CAPEX", ("CAPEX", "BELANJA MODAL", "CAPITAL EXPENDITURE"), 70.0, 76.0),
+    ("CAPEX", ("CAPEX", "BELANJA MODAL", "CAPITAL EXPENDITURE", "INVESTASI"), 70.0, 76.0),
 )
 _ADVERSE: tuple[tuple[str, tuple[str, ...], float, float], ...] = (
     ("PROJECT_DELAY_OR_CANCEL", ("KONTRAK DIBATALKAN", "CONTRACT CANCELLED", "CONTRACT TERMINATED", "PROYEK DITUNDA", "PROJECT DELAY", "COD MUNDUR"), 86.0, 88.0),
     ("GUIDANCE_CUT", ("GUIDANCE CUT", "GUIDANCE DITURUNKAN", "TARGET DITURUNKAN"), 82.0, 90.0),
 )
+_STOPWORDS = {"PT", "TBK", "PERSERO", "INDONESIA", "INDUSTRI", "INDUSTRIES", "THE", "AND", "DAN"}
 
 
 def _ticker(value: Any) -> str:
@@ -38,8 +39,27 @@ def _clean(value: Any) -> str:
     return re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", " ", str(value or "")))).strip()
 
 
-def _mentions_ticker(title: str, bare: str) -> bool:
-    return bool(re.search(rf"(?<![A-Z0-9]){re.escape(bare.upper())}(?![A-Z0-9])", str(title or "").upper()))
+def _company_label(value: Any) -> str:
+    text = _clean(value).upper()
+    text = re.sub(r"\bTBK\b|\bPT\b|\bPERSERO\b", " ", text)
+    text = re.sub(r"[^A-Z0-9 ]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _company_tokens(value: Any) -> list[str]:
+    return [token for token in _company_label(value).split() if len(token) >= 4 and token not in _STOPWORDS]
+
+
+def _entity_match(title: str, bare: str, company_name: str) -> tuple[bool, str]:
+    upper = str(title or "").upper()
+    if re.search(rf"(?<![A-Z0-9]){re.escape(bare.upper())}(?![A-Z0-9])", upper):
+        return True, "TICKER_EXACT_TITLE"
+    tokens = _company_tokens(company_name)
+    if not tokens:
+        return False, "NO_COMPANY_TOKENS"
+    matches = [token for token in tokens if re.search(rf"(?<![A-Z0-9]){re.escape(token)}(?![A-Z0-9])", upper)]
+    needed = 1 if len(tokens) == 1 else 2
+    return len(matches) >= needed, f"COMPANY_TOKEN_MATCH_{len(matches)}OF{len(tokens)}"
 
 
 def _classify(text: str) -> tuple[str, float, float, int] | None:
@@ -63,14 +83,16 @@ def _published(value: Any) -> pd.Timestamp | pd.NaT:
     return stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp.tz_convert("UTC")
 
 
-def _one(ticker: str, lookback_days: int, timeout: float) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def _one(ticker: str, company_name: str, lookback_days: int, timeout: float) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     symbol = _ticker(ticker)
     bare = symbol.removesuffix(".JK")
     checked = pd.Timestamp.now(tz="UTC")
-    query = quote_plus(f'"{bare}" IDX saham')
-    url = f"https://news.google.com/rss/search?q={query}&hl=id&gl=ID&ceid=ID:id"
+    label = _company_label(company_name)
+    query_text = f'"{label}" saham' if label else f'"{bare}" IDX saham'
+    url = f"https://news.google.com/rss/search?q={quote_plus(query_text)}&hl=id&gl=ID&ceid=ID:id"
     base_audit = {
         "ticker": symbol,
+        "company_name": company_name,
         "checked_at": checked.isoformat(),
         "provider": "GOOGLE_NEWS_RSS_FORWARD",
         "collection_version": LIVE_FORWARD_EVIDENCE_VERSION,
@@ -78,7 +100,7 @@ def _one(ticker: str, lookback_days: int, timeout: float) -> tuple[list[dict[str
         "strict_official_quorum": False,
     }
     try:
-        response = requests.get(url, timeout=max(1.0, float(timeout)), headers={"User-Agent": "Mozilla/5.0 IDXEmirScanner/1.0"})
+        response = requests.get(url, timeout=max(1.0, float(timeout)), headers={"User-Agent": "Mozilla/5.0 IDXEmirScanner/1.1"})
         response.raise_for_status()
         root = ET.fromstring(response.content)
     except Exception as exc:
@@ -88,13 +110,14 @@ def _one(ticker: str, lookback_days: int, timeout: float) -> tuple[list[dict[str
     events: list[dict[str, Any]] = []
     publishers: set[str] = set()
     scanned = matched = 0
-    for item in root.findall(".//item")[:20]:
+    for item in root.findall(".//item")[:30]:
         title = _clean(item.findtext("title"))
         published = _published(item.findtext("pubDate"))
         if pd.notna(published) and published < cutoff:
             continue
         scanned += 1
-        if not _mentions_ticker(title, bare):
+        entity_ok, entity_method = _entity_match(title, bare, company_name)
+        if not entity_ok:
             continue
         matched += 1
         classified = _classify(title)
@@ -108,6 +131,7 @@ def _one(ticker: str, lookback_days: int, timeout: float) -> tuple[list[dict[str
             publishers.add(publisher.upper())
         events.append({
             "ticker": symbol,
+            "company_name": company_name,
             "published_at": published.isoformat() if pd.notna(published) else checked.isoformat(),
             "title": title[:500],
             "summary": "Live forward research discovery; verify official disclosure before real-money use.",
@@ -123,8 +147,9 @@ def _one(ticker: str, lookback_days: int, timeout: float) -> tuple[list[dict[str
             "collection_provider": "LIVE_GOOGLE_NEWS_FORWARD_RESEARCH",
             "source_verified": False,
             "entity_match_verified": True,
+            "entity_match_method": entity_method,
             "source_quorum_verified": False,
-            "source_quorum_count": 0,
+            "source_quorum_count": max(1, len(publishers)),
             "forward_research_only": True,
         })
     if events:
@@ -149,16 +174,21 @@ def _one(ticker: str, lookback_days: int, timeout: float) -> tuple[list[dict[str
 
 
 def collect_live_forward_evidence(
-    tickers: Iterable[Any], *, lookback_days: int = 120, max_workers: int = 12, timeout: float = 4.0
+    tickers: Iterable[Any], *, company_names: Mapping[str, Any] | None = None,
+    lookback_days: int = 120, max_workers: int = 12, timeout: float = 4.0,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     names = list(dict.fromkeys(_ticker(value) for value in tickers if _ticker(value)))
     if not names:
         return pd.DataFrame(), pd.DataFrame()
+    company_names = {_ticker(key): str(value or "") for key, value in dict(company_names or {}).items()}
     events: list[dict[str, Any]] = []
     audits: list[dict[str, Any]] = []
     workers = max(1, min(16, int(max_workers), len(names)))
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_one, ticker, lookback_days, timeout): ticker for ticker in names}
+        futures = {
+            pool.submit(_one, ticker, company_names.get(ticker, ""), lookback_days, timeout): ticker
+            for ticker in names
+        }
         for future in as_completed(futures):
             ticker = futures[future]
             try:
@@ -168,6 +198,7 @@ def collect_live_forward_evidence(
             except Exception as exc:
                 audits.append({
                     "ticker": ticker,
+                    "company_name": company_names.get(ticker, ""),
                     "checked_at": pd.Timestamp.now(tz="UTC").isoformat(),
                     "provider": "GOOGLE_NEWS_RSS_FORWARD",
                     "state": "FORWARD_CHECK_FAILED_RETRYABLE",
@@ -178,7 +209,6 @@ def collect_live_forward_evidence(
 
 
 def install_dashboard_cost_integrity() -> None:
-    """Repair legacy Smart Money Cost placement without changing values."""
     try:
         import top3_dashboard as dashboard
     except Exception:
@@ -193,10 +223,7 @@ def install_dashboard_cost_integrity() -> None:
         if not blocks:
             return html
         html = re.sub(r'<div class="es-cost-basis">.*?</div>', "", html, flags=re.DOTALL)
-        markers = (
-            "</div><p>OHLCV PROXY — BUKAN IDENTITAS BROKER</p>",
-            "</div><p>DIRECT BROKER EVIDENCE</p>",
-        )
+        markers = ("</div><p>OHLCV PROXY — BUKAN IDENTITAS BROKER</p>", "</div><p>DIRECT BROKER EVIDENCE</p>")
         cursor = 0
         for block in blocks:
             candidates = [(html.find(marker, cursor), marker) for marker in markers]
