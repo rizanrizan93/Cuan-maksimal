@@ -2,23 +2,20 @@ from __future__ import annotations
 
 """Load durable, verified direct evidence for reuse in later Emir scans.
 
-The production source of truth is ``cak_persistent_direct_evidence``. It has no
-foreign key to a scan run, so pruning old scan snapshots cannot delete evidence.
-The legacy ``cak_direct_evidence`` table is used only as a schema-compatibility
-fallback when the master table itself is unavailable.
-
-Rows remain evidence-specific and freshness-bounded. Missing regulatory states
-are never converted into a clean/false state and unverified/revoked rows are
-never promoted.
+``cak_persistent_direct_evidence`` remains the durable master for direct market
+observations. Governed forward/management tables are read alongside it. Official
+forward events are reusable only when HTTPS, entity match and >=2-source quorum
+are explicit; legacy verified-only rows are no longer promoted into production.
 """
 
 from typing import Any, Iterable
 
 import pandas as pd
 
+from governed_evidence_bridge import load_governed_evidence, persistent_forward_payload_is_strict
 from persistence import DatabaseConfig, _request
 
-PERSISTENT_DIRECT_EVIDENCE_VERSION = "1.1.0-master-store"
+PERSISTENT_DIRECT_EVIDENCE_VERSION = "1.2.0-governed-evidence-consumption"
 _MASTER_TABLE = "cak_persistent_direct_evidence"
 _LEGACY_TABLE = "cak_direct_evidence"
 
@@ -38,6 +35,7 @@ def _empty() -> dict[str, pd.DataFrame]:
         "orderbook": pd.DataFrame(),
         "idx_integrity": pd.DataFrame(),
         "official_forward_events": pd.DataFrame(),
+        "management_capital_events": pd.DataFrame(),
         "audit": pd.DataFrame(),
     }
 
@@ -82,6 +80,38 @@ def _read_rows(
     return rows
 
 
+def _event_url(frame: pd.DataFrame) -> pd.Series:
+    if "url" in frame.columns:
+        url = frame["url"].fillna("").astype(str)
+    else:
+        url = pd.Series("", index=frame.index, dtype=str)
+    if "source_url" in frame.columns:
+        url = url.where(url.str.len().gt(0), frame["source_url"].fillna("").astype(str))
+    return url
+
+
+def _merge_forward_sources(persisted: pd.DataFrame, governed: pd.DataFrame) -> pd.DataFrame:
+    persisted = persisted.copy() if isinstance(persisted, pd.DataFrame) else pd.DataFrame()
+    governed = governed.copy() if isinstance(governed, pd.DataFrame) else pd.DataFrame()
+    if governed.empty:
+        return persisted.reset_index(drop=True)
+    governed["_canonical_url"] = _event_url(governed)
+    governed_pairs = set(zip(governed.get("ticker", pd.Series(dtype=str)).astype(str), governed["_canonical_url"].astype(str)))
+    if not persisted.empty:
+        persisted["_canonical_url"] = _event_url(persisted)
+        keep = [
+            (str(ticker), str(url)) not in governed_pairs
+            for ticker, url in zip(persisted.get("ticker", pd.Series("", index=persisted.index)), persisted["_canonical_url"])
+        ]
+        persisted = persisted.loc[keep].copy()
+    combined = pd.concat([governed, persisted], ignore_index=True, sort=False)
+    combined = combined.drop(columns=["_canonical_url"], errors="ignore")
+    dedupe = [column for column in ("ticker", "title", "url") if column in combined.columns]
+    if dedupe:
+        combined = combined.drop_duplicates(dedupe, keep="first")
+    return combined.reset_index(drop=True)
+
+
 def load_verified_direct_evidence(
     config: DatabaseConfig,
     tickers: Iterable[str] | None = None,
@@ -105,9 +135,6 @@ def load_verified_direct_evidence(
     try:
         rows = _read_rows(config, table=_MASTER_TABLE, limit=safe_limit, page_size=safe_page)
     except Exception as exc:
-        # Compatibility only: older deployments may not have the master table yet.
-        # An empty master table is NOT a reason to fall back, because empty may be
-        # intentional after revocation.
         read_error = f"{type(exc).__name__}: {str(exc)[:300]}"
         source_store = _LEGACY_TABLE
         try:
@@ -144,6 +171,9 @@ def load_verified_direct_evidence(
         record["ticker"] = ticker
         record["evidence_type"] = evidence_type
         record["source_verified"] = True
+        if not record.get("source_url") and item.get("source_url"):
+            record["source_url"] = item.get("source_url")
+
         observed_raw = item.get("observed_at") or record.get("observed_at") or record.get("published_at") or record.get("date")
         observed = pd.to_datetime(observed_raw, errors="coerce", utc=True)
         age_days = (now - observed).total_seconds() / 86400.0 if pd.notna(observed) else float("inf")
@@ -156,29 +186,34 @@ def load_verified_direct_evidence(
         fresh = pd.notna(observed) and 0 <= age_days <= max_age
 
         evidence_key = str(item.get("evidence_key") or item.get("evidence_id") or "")
+        strict_forward = True
+        if evidence_type == "OFFICIAL_FORWARD_EVENT":
+            strict_forward = persistent_forward_payload_is_strict(record, source_url=item.get("source_url"))
+        status = (
+            "PERSISTED_FORWARD_BLOCKED_MISSING_STRICT_LINEAGE"
+            if evidence_type == "OFFICIAL_FORWARD_EVENT" and not strict_forward
+            else "PERSISTED_VERIFIED_CURRENT" if fresh
+            else "PERSISTED_VERIFIED_STALE"
+        )
         audit.append({
             "ticker": ticker,
             "evidence_type": evidence_type,
             "provider": "PERSISTENT_DIRECT_EVIDENCE",
-            "status": "PERSISTED_VERIFIED_CURRENT" if fresh else "PERSISTED_VERIFIED_STALE",
+            "status": status,
             "source_store": source_store,
             "evidence_key": evidence_key,
             "observed_at": observed.isoformat() if pd.notna(observed) else "",
             "age_days": round(age_days, 1) if age_days != float("inf") else None,
             "freshness_policy_days": max_age,
         })
-        if not fresh:
+        if not fresh or not strict_forward:
             continue
 
         record["observed_at"] = observed.isoformat()
         record["persistent_evidence_key"] = evidence_key
         record["persistent_evidence_store"] = source_store
         record["source_scan_id"] = item.get("source_scan_id") or item.get("scan_id") or ""
-        if not record.get("source_url") and item.get("source_url"):
-            record["source_url"] = item.get("source_url")
 
-        # Same ticker/type may legitimately have multiple official forward events
-        # from different issuer URLs. Other direct evidence types use latest-only.
         source_key = str(record.get("url") or record.get("source_url") or evidence_key)
         key = (ticker, evidence_type, source_key if evidence_type == "OFFICIAL_FORWARD_EVENT" else evidence_type)
         if key in seen:
@@ -197,7 +232,19 @@ def load_verified_direct_evidence(
         }
         for evidence_type, key in mapping.items():
             result[key] = frame.loc[frame["evidence_type"] == evidence_type].copy().reset_index(drop=True)
-    result["audit"] = pd.DataFrame(audit)
+
+    governed = load_governed_evidence(config, tickers, as_of=now)
+    result["official_forward_events"] = _merge_forward_sources(
+        result.get("official_forward_events", pd.DataFrame()),
+        governed.get("official_forward_events", pd.DataFrame()),
+    )
+    result["management_capital_events"] = governed.get("management_capital_events", pd.DataFrame()).copy()
+    audit_frames = [pd.DataFrame(audit), governed.get("audit", pd.DataFrame())]
+    result["audit"] = pd.concat(
+        [item for item in audit_frames if isinstance(item, pd.DataFrame) and not item.empty],
+        ignore_index=True,
+        sort=False,
+    ) if any(isinstance(item, pd.DataFrame) and not item.empty for item in audit_frames) else pd.DataFrame()
     return result
 
 
