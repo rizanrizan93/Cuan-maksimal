@@ -7,6 +7,12 @@ import sys
 from collections.abc import Mapping, Sequence
 
 
+def _install_integrity_patch(expected: str) -> None:
+    patch = importlib.import_module("runtime_integrity_patch")
+    patch = importlib.reload(patch)
+    patch.install(expected)
+
+
 def refresh_release_runtime(
     *,
     reload_order: Sequence[str],
@@ -21,15 +27,15 @@ def refresh_release_runtime(
         and str(getattr(sys.modules[module_name], attribute, "")) != expected
         for module_name, attribute in version_markers.items()
     )
-    if not stale:
-        return expected, ()
     reloaded: list[str] = []
-    for module_name in reload_order:
-        module = sys.modules.get(module_name)
-        if module is None:
-            continue
-        importlib.reload(module)
-        reloaded.append(module_name)
+    if stale:
+        for module_name in reload_order:
+            module = sys.modules.get(module_name)
+            if module is None:
+                continue
+            importlib.reload(module)
+            reloaded.append(module_name)
+    _install_integrity_patch(expected)
     return expected, tuple(reloaded)
 
 
