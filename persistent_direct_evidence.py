@@ -234,11 +234,22 @@ def load_verified_direct_evidence(
             result[key] = frame.loc[frame["evidence_type"] == evidence_type].copy().reset_index(drop=True)
 
     governed = load_governed_evidence(config, tickers, as_of=now)
+    management_events = governed.get("management_capital_events", pd.DataFrame()).copy()
+    eligible_management = pd.DataFrame()
+    if isinstance(management_events, pd.DataFrame) and not management_events.empty:
+        eligible_management = management_events.loc[
+            management_events.get("narrative_eligible", pd.Series(False, index=management_events.index)).fillna(False).astype(bool)
+        ].copy()
+    governed_scoring_frames = [
+        item for item in (governed.get("official_forward_events", pd.DataFrame()), eligible_management)
+        if isinstance(item, pd.DataFrame) and not item.empty
+    ]
+    governed_scoring = pd.concat(governed_scoring_frames, ignore_index=True, sort=False) if governed_scoring_frames else pd.DataFrame()
     result["official_forward_events"] = _merge_forward_sources(
         result.get("official_forward_events", pd.DataFrame()),
-        governed.get("official_forward_events", pd.DataFrame()),
+        governed_scoring,
     )
-    result["management_capital_events"] = governed.get("management_capital_events", pd.DataFrame()).copy()
+    result["management_capital_events"] = management_events
     audit_frames = [pd.DataFrame(audit), governed.get("audit", pd.DataFrame())]
     result["audit"] = pd.concat(
         [item for item in audit_frames if isinstance(item, pd.DataFrame) and not item.empty],
