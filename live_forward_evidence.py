@@ -20,7 +20,7 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 import requests
 
-LIVE_FORWARD_EVIDENCE_VERSION = "1.0.0"
+LIVE_FORWARD_EVIDENCE_VERSION = "1.0.1"
 
 _RULES: tuple[tuple[str, tuple[str, ...], float, float], ...] = (
     ("PROJECT_OR_CONTRACT", ("KONTRAK", "CONTRACT", "BACKLOG", "ORDER BOOK", "ORDERBOOK", "OFFTAKE", "TENDER"), 76.0, 82.0),
@@ -70,7 +70,8 @@ def _one(ticker: str, lookback_days: int, timeout: float) -> tuple[list[dict[str
     symbol = _ticker(ticker)
     bare = symbol.removesuffix(".JK")
     checked = pd.Timestamp.now(tz="UTC")
-    url = f"https://news.google.com/rss/search?q={quote_plus(f'\"{bare}\" IDX saham')}&hl=id&gl=ID&ceid=ID:id"
+    query = quote_plus(f'"{bare}" IDX saham')
+    url = f"https://news.google.com/rss/search?q={query}&hl=id&gl=ID&ceid=ID:id"
     base_audit = {
         "ticker": symbol,
         "checked_at": checked.isoformat(),
