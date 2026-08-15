@@ -60,7 +60,7 @@ def test_checkpoint_mismatch_with_full_readback_retries_to_success(monkeypatch):
 def test_smart_money_cost_is_one_block_per_card():
     import top3_dashboard
 
-    rip._wrap_dashboard_renderer(top3_dashboard)
+    lfe.install_dashboard_cost_integrity()
     top = pd.DataFrame([
         {"ticker": "AAA.JK", "last_price": 100.0, "research_accumulation_zone_low": 90.0, "research_accumulation_zone_high": 94.0, "silent_accumulation_score": 70.0, "emir_conviction_score": 70.0, "emir_decision_state": "EMIR_NO_EDGE_YET"},
         {"ticker": "BBB.JK", "last_price": 200.0, "research_accumulation_zone_low": 180.0, "research_accumulation_zone_high": 188.0, "silent_accumulation_score": 65.0, "emir_conviction_score": 65.0, "emir_decision_state": "EMIR_NO_EDGE_YET"},
@@ -68,11 +68,12 @@ def test_smart_money_cost_is_one_block_per_card():
     ])
     html = top3_dashboard.render_top3_dashboard_html(top)
     assert html.count('class="es-cost-basis"') == 3
-    first_ticker = html.find("AAA.JK")
+    # Production cards render the IDX symbol without the .JK suffix.
+    first_ticker = html.find(">AAA<")
     first_cost = html.find('class="es-cost-basis"')
-    second_ticker = html.find("BBB.JK", first_ticker + 1)
+    second_ticker = html.find(">BBB<", first_ticker + 1)
     second_cost = html.find('class="es-cost-basis"', first_cost + 1)
-    third_ticker = html.find("CCC.JK", second_ticker + 1)
+    third_ticker = html.find(">CCC<", second_ticker + 1)
     third_cost = html.find('class="es-cost-basis"', second_cost + 1)
     assert -1 not in (first_ticker, first_cost, second_ticker, second_cost, third_ticker, third_cost)
     assert first_ticker < first_cost < second_ticker < second_cost < third_ticker < third_cost
