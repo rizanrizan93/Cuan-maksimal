@@ -1,0 +1,54 @@
+name: Emir full forward collection coverage
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONPATH: ${{ github.workspace }}
+
+jobs:
+  forward-coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Check full 400 live forward source coverage
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import pandas as pd
+          from live_forward_evidence import collect_live_forward_evidence
+
+          text = Path('tools/idx_400_production_universe_2026-07.txt').read_text()
+          line = next(line for line in text.splitlines() if line.strip() and not line.startswith('#'))
+          tickers = [item.strip() for item in line.split(',') if item.strip()]
+          assert len(tickers) == 400, len(tickers)
+          events, audit = collect_live_forward_evidence(
+              tickers,
+              lookback_days=180,
+              max_workers=16,
+              timeout=6.0,
+          )
+          checked = audit.loc[pd.to_numeric(audit['coverage_pct'], errors='coerce').fillna(0).gt(0), 'ticker'].nunique()
+          coverage = round(100.0 * checked / len(tickers), 1)
+          states = audit.groupby('state')['ticker'].nunique().sort_values(ascending=False).to_dict()
+          failed = audit.loc[audit['state'].eq('FORWARD_CHECK_FAILED_RETRYABLE'), 'ticker'].nunique()
+          print('FULL_FORWARD_COLLECTION_COVERAGE', coverage)
+          print('STATE_COUNTS', states)
+          print('MATERIAL_EVENTS', len(events), 'MATERIAL_TICKERS', events['ticker'].nunique() if not events.empty else 0)
+          print('FAILED_TICKERS', failed)
+          if coverage < 90.0:
+              raise SystemExit(f'full-universe forward collection coverage too low: {coverage}%')
+          PY
