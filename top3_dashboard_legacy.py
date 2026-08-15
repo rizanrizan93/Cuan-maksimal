@@ -244,6 +244,13 @@ def calculate_next_leader_score(row: Mapping[str, Any]) -> dict[str, Any]:
     data_quality = _score(data_quality_raw, fundamental_cov)
     future_ff = _optional_score(row.get("future_fundamental_score"))
     future_ff_cov = _score(row.get("future_fundamental_coverage_pct"))
+    has_direct_forward_lineage = "future_direct_forward_visibility_score" in row
+    direct_forward = _optional_score(row.get("future_direct_forward_visibility_score"))
+    direct_forward_cov = _score(row.get("future_direct_forward_visibility_coverage_pct"))
+    # New snapshots rank only the incremental project/contract signal.  Persisted
+    # pre-v1.9.19 rows fall back to the holistic field for display compatibility.
+    future_rank_signal = direct_forward if has_direct_forward_lineage else future_ff
+    future_rank_coverage = direct_forward_cov if has_direct_forward_lineage else future_ff_cov
     future_ff_state = str(row.get("future_fundamental_state") or "FUTURE_FUNDAMENTAL_EVIDENCE_PENDING")
     story = _optional_score(row.get("story_runway_score"))
     conversion = _optional_score(row.get("financial_conversion_score"))
@@ -308,7 +315,7 @@ def calculate_next_leader_score(row: Mapping[str, Any]) -> dict[str, Any]:
         (effective_fundamental if np.isfinite(fundamental_raw) else np.nan, 0.27, fundamental_cov),
         (momentum, 0.18, fundamental_cov),
         (effective_data_quality if np.isfinite(data_quality_raw) else np.nan, 0.05, fundamental_cov),
-        (future_ff, 0.15, future_ff_cov),
+        (future_rank_signal, 0.15, future_rank_coverage),
         (story, 0.08, narrative_cov),
         (conversion, 0.07, narrative_cov),
         (alignment, 0.05, alignment_cov),
@@ -418,7 +425,7 @@ def calculate_next_leader_score(row: Mapping[str, Any]) -> dict[str, Any]:
     elif data_integrity_block:
         state = "NEXT_LEADER_RESEARCH"
         quality_flags.append("DATA_INTEGRITY_REVIEW_REQUIRED")
-    elif score >= 70 and effective_fundamental >= 65 and effective_data_quality >= 80 and (not np.isfinite(future_ff) or (future_ff_cov >= 50 and _score(future_ff, 0) >= 60)):
+    elif score >= 70 and effective_fundamental >= 65 and effective_data_quality >= 80 and (not np.isfinite(future_rank_signal) or (future_rank_coverage >= 50 and _score(future_rank_signal, 0) >= 60)):
         state = "NEXT_LEADER_HIGH_CONVICTION"
     elif score >= 55 and effective_fundamental >= 55 and effective_data_quality >= 75:
         state = "NEXT_LEADER_WATCH"
@@ -436,6 +443,9 @@ def calculate_next_leader_score(row: Mapping[str, Any]) -> dict[str, Any]:
         "next_leader_business_momentum_basis": momentum_basis,
         "next_leader_future_fundamental_score": round(_score(future_ff, 0), 1) if np.isfinite(future_ff) else np.nan,
         "next_leader_future_fundamental_coverage_pct": round(future_ff_cov, 1),
+        "next_leader_direct_forward_visibility_score": round(_score(direct_forward, 0), 1) if np.isfinite(direct_forward) else np.nan,
+        "next_leader_direct_forward_visibility_coverage_pct": round(direct_forward_cov, 1),
+        "next_leader_overlap_control_state": "DIRECT_FORWARD_SIGNAL_EXCLUDES_CURRENT_FUNDAMENTAL" if has_direct_forward_lineage else "LEGACY_HOLISTIC_FUTURE_FALLBACK",
         "next_leader_business_quality_adjustment": round(business_quality_adjustment, 1),
         "next_leader_sector_model_state": model_state,
         "next_leader_quality_flags": " | ".join(quality_flags) or "NONE",

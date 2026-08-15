@@ -8,6 +8,8 @@ def _row(coverage: float) -> dict[str, float | str]:
         "fundamental_data_quality_score": 90.0,
         "future_fundamental_score": 78.0,
         "future_fundamental_coverage_pct": coverage,
+        "future_direct_forward_visibility_score": 72.0,
+        "future_direct_forward_visibility_coverage_pct": coverage,
         "story_runway_score": 80.0,
         "financial_conversion_score": 78.0,
         "narrative_coverage_pct": coverage,
@@ -41,3 +43,16 @@ def test_next_leader_coverage_uses_underlying_evidence_not_column_presence():
     assert thin["next_leader_model_coverage_pct"] < 25.0
     assert complete["next_leader_model_coverage_pct"] > 90.0
     assert thin["next_leader_score"] < complete["next_leader_score"]
+
+
+def test_next_leader_does_not_reuse_holistic_future_fundamental_in_new_rows():
+    low_holistic = _row(95.0)
+    high_holistic = _row(95.0)
+    low_holistic["future_fundamental_score"] = 20.0
+    high_holistic["future_fundamental_score"] = 95.0
+
+    low = calculate_next_leader_score(low_holistic)
+    high = calculate_next_leader_score(high_holistic)
+
+    assert low["next_leader_score"] == high["next_leader_score"]
+    assert low["next_leader_overlap_control_state"] == "DIRECT_FORWARD_SIGNAL_EXCLUDES_CURRENT_FUNDAMENTAL"

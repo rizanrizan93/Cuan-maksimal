@@ -53,6 +53,21 @@ def test_idx_xbrl_extracts_yoy_ocf_and_fcf():
     assert row["idx_official_cashflow_state"] == "IDX_OFFICIAL_YTD_OCF_FCF_AVAILABLE"
 
 
+def test_idx_xbrl_sums_official_productive_asset_capex_tags():
+    fixture = _xbrl_fixture().replace(
+        b"PaymentsForAcquisitionOfPropertyPlantAndEquipment",
+        b"PaymentsForAcquisitionOfPropertyAndEquipment",
+    ).replace(
+        b"</xbrli:xbrl>",
+        b'<id:PaymentsForAcquisitionOfIntangibleAssets contextRef="CurrentYearDuration" unitRef="IDR">20</id:PaymentsForAcquisitionOfIntangibleAssets></xbrli:xbrl>',
+    )
+    row = parse_idx_xbrl_instance(
+        "TEST.JK", fixture, source_url="https://idx.test/instance.zip", period_label="TW2"
+    )
+    assert row["idx_official_capex_proxy"] == -70
+    assert row["idx_official_fcf_proxy"] == 150
+
+
 def test_official_reconciliation_overrides_proxy_mismatch_and_unlocks_cashflow():
     proxy = {
         "ticker":"BISI.JK", "fundamental_latest_period":"2026-06-30",
