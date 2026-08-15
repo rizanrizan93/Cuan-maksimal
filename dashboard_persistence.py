@@ -46,9 +46,14 @@ def build_database_transfer_summary(result: Mapping[str, Any]) -> pd.DataFrame:
         verify_row = verify_map.get(table, {})
         written = int(float(write_row.get("rows_written", 0) or 0))
         verified = int(float(verify_row.get("rows_verified", 0) or 0))
-        if expected == 0 and str(verify_row.get("state", "")) == "VERIFIED_EXACT":
+        observed = int(float(verify_row.get("rows_observed", verified) or 0))
+        readback_state = str(verify_row.get("state", ""))
+        contract_verified = readback_state in {"VERIFIED_EXACT", "VERIFIED_AT_LEAST_EXPECTED"}
+        if expected == 0 and contract_verified and observed > 0:
+            state = "VERIFIED_WITH_MAINTENANCE_ROWS"
+        elif expected == 0 and contract_verified:
             state = "VERIFIED_EMPTY"
-        elif expected > 0 and verified == expected:
+        elif expected > 0 and verified == expected and contract_verified:
             state = "VERIFIED_IN_DATABASE"
         elif expected > 0 and written == expected:
             state = "WRITTEN_NOT_FULLY_VERIFIED"
@@ -61,9 +66,10 @@ def build_database_transfer_summary(result: Mapping[str, Any]) -> pd.DataFrame:
             "expected_rows": expected,
             "written_rows": written,
             "verified_rows": verified,
+            "observed_rows": observed,
             "transfer_state": state,
             "write_state": str(write_row.get("state", "") or ""),
-            "readback_state": str(verify_row.get("state", "") or ""),
+            "readback_state": readback_state,
         })
     return pd.DataFrame(rows)
 
