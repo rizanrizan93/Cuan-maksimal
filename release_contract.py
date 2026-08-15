@@ -1,5 +1,5 @@
 """Single source of truth for Emir runtime, job, and persistence lineage."""
 
-SCANNER_RELEASE_VERSION = "1.9.24-governed-evidence-consumption"
+SCANNER_RELEASE_VERSION = "1.9.25-live-forward-evidence"
 
 __all__ = ["SCANNER_RELEASE_VERSION"]

@@ -27,13 +27,39 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
       - name: Compile critical modules
-        run: python -m py_compile app.py release_contract.py runtime_release.py runtime_integrity_patch.py evidence_governance.py free_tier_storage.py future_fundamental.py persistence.py persistent_direct_evidence.py research_memory.py resumable_scan.py scan_jobs.py data_providers.py autonomous_enrichment.py narrative_flow_engine.py
+        run: python -m py_compile app.py release_contract.py runtime_release.py runtime_integrity_patch.py live_forward_evidence.py live_forward_runtime_patch.py evidence_governance.py free_tier_storage.py future_fundamental.py persistence.py persistent_direct_evidence.py research_memory.py resumable_scan.py scan_jobs.py data_providers.py autonomous_enrichment.py narrative_flow_engine.py
       - name: Evidence governance regression
         run: pytest -q --disable-socket tests/test_evidence_governance.py
       - name: App startup regression
         run: pytest -q --disable-socket tests/test_app_startup_stub.py
       - name: Core offline regression suite
         run: pytest -q --disable-socket --ignore=tests/test_evidence_governance.py --ignore=tests/test_app_startup_stub.py
+      - name: Live Future Fundamental network acquisition
+        run: |
+          python - <<'PY'
+          from live_forward_evidence import collect_live_forward_evidence
+          names = ['MARK.JK','OMED.JK','TSPC.JK','MAHA.JK','ELSA.JK','TOTL.JK','DGWG.JK','AYAM.JK']
+          companies = {
+              'MARK.JK':'MARK DYNAMICS INDONESIA Tbk, PT',
+              'OMED.JK':'JAYAMAS MEDICA INDUSTRI Tbk, PT',
+              'TSPC.JK':'Tempo Scan Pacific Tbk, PT',
+              'MAHA.JK':'MANDIRI HERINDO ADIPERKASA Tbk, PT',
+              'ELSA.JK':'Elnusa Tbk, PT',
+              'TOTL.JK':'Total Bangun Persada Tbk, PT',
+              'DGWG.JK':'DELTA GIRI WACANA Tbk, PT',
+              'AYAM.JK':'JANU PUTRA SEJAHTERA Tbk, PT',
+          }
+          events, audit = collect_live_forward_evidence(names, company_names=companies, lookback_days=180, max_workers=8, timeout=6.0)
+          print(audit[['ticker','company_name','state','coverage_pct','material_events']].to_string(index=False))
+          checked = audit.loc[audit['coverage_pct'].fillna(0).astype(float).gt(0), 'ticker'].nunique()
+          pct = round(100.0 * checked / len(names), 1)
+          material_tickers = events['ticker'].nunique() if not events.empty else 0
+          print('LIVE_FORWARD_COLLECTION_COVERAGE', pct, 'MATERIAL_EVENTS', len(events), 'MATERIAL_TICKERS', material_tickers)
+          if pct < 90.0:
+              raise SystemExit(f'live forward collection coverage too low: {pct}%')
+          if events.empty:
+              raise SystemExit('live forward acquisition returned no material evidence for known-evidence test issuers')
+          PY
       - name: Current performance contract
         run: python validation_v1_9_14_future_db_acceleration.py
       - name: Streamlit runtime smoke
