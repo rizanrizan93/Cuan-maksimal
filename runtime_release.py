@@ -33,10 +33,18 @@ def _install_integrity_patch(expected: str) -> None:
             installer()
     except Exception:
         pass
+    try:
+        checkpoint_patch = importlib.import_module("runtime_cache_checkpoint_hotfix")
+        installer = getattr(checkpoint_patch, "install", None)
+        if callable(installer):
+            installer()
+    except Exception:
+        pass
 
 
 def refresh_release_runtime(
-    *, reload_order: Sequence[str], version_markers: Mapping[str, str],
+    *,
+    reload_order: Sequence[str], version_markers: Mapping[str, str],
 ) -> tuple[str, tuple[str, ...]]:
     importlib.invalidate_caches()
     contract = importlib.import_module("release_contract")
