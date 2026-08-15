@@ -1963,15 +1963,13 @@ def build_emir_profile(
     fundamental_conversion = _finite(fundamental.get("fundamental_conversion_score"), np.nan)
     fundamental_coverage = _finite(fundamental.get("fundamental_coverage_pct"), 0)
     fundamental_data_quality = _finite(fundamental.get("fundamental_data_quality_score"), 0)
-    conversion, conversion_coverage = _weighted_fixed([
-        (narrative_conversion, 0.60, narrative_coverage if np.isfinite(narrative_conversion) else 0),
-        (fundamental_conversion, 0.40, fundamental_coverage),
-    ])
-    if fundamental_coverage <= 0 and np.isfinite(narrative_conversion):
-        conversion = narrative_conversion
-        conversion_coverage = narrative_coverage
-    elif not np.isfinite(conversion):
-        conversion = narrative_conversion if np.isfinite(narrative_conversion) else fundamental_conversion
+    # Fundamental conversion already owns a 16% pillar below.  Older versions
+    # reused 40% of it inside this 8% narrative-conversion pillar, silently
+    # adding another 3.2 percentage points of the same evidence.  Keep this
+    # pillar narrative-only; missing narrative conversion reduces coverage and
+    # never causes the fundamental score to be counted twice.
+    conversion = narrative_conversion if np.isfinite(narrative_conversion) else np.nan
+    conversion_coverage = narrative_coverage if np.isfinite(narrative_conversion) else 0.0
     alignment = _finite(narrative.get("issuer_alignment_score"), np.nan)
     alignment_coverage = _finite(narrative.get("issuer_alignment_coverage_pct"), 0)
     ownership_score = _finite(ownership.get("ownership_score"), np.nan)
@@ -2449,6 +2447,8 @@ def build_emir_profile(
         "emir_lifecycle": lifecycle,
         "emir_conviction_score": round(conviction, 1) if np.isfinite(conviction) else np.nan,
         "emir_evidence_coverage_pct": round(evidence_coverage, 1),
+        "emir_scoring_lineage_state": "DISJOINT_EVIDENCE_PILLARS_V2",
+        "emir_overlap_control_state": "FUNDAMENTAL_NOT_REUSED_IN_NARRATIVE_CONVERSION",
         "emir_decision_state": state,
         "core_thesis_ready": core_thesis_ready,
         "auto_core_thesis_ready": auto_core_thesis_ready,

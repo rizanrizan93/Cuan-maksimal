@@ -65,7 +65,9 @@ def test_missing_forward_evidence_penalty_preserves_cross_sectional_discriminati
     assert high["future_fundamental_score"] > low["future_fundamental_score"]
     assert high["future_fundamental_score"] != 55.0
     assert low["future_fundamental_score"] != 55.0
-    assert high["future_fundamental_version"] == "1.0.2-forward-event-integrity"
+    assert high["future_fundamental_version"] == "1.0.3-direct-forward-lineage"
+    assert high["future_direct_forward_visibility_coverage_pct"] == 0.0
+    assert high["future_direct_forward_lineage_state"] == "DIRECT_PROJECT_CONTRACT_ONLY_NO_CURRENT_FUNDAMENTAL_REUSE"
 
 
 def test_benchmark_freshness_accepts_index_only_fast_cache_references():

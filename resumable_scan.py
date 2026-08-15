@@ -854,6 +854,37 @@ def _chunk_audits(config: DatabaseConfig, scan_id: str) -> pd.DataFrame:
 def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     scan_id = str(job.get("scan_id"))
     settings = dict(job.get("settings") or {})
+
+    def _heartbeat(progress_pct: float, phase: str) -> None:
+        """Expose long FINALIZE sub-phases without making telemetry fatal.
+
+        A 400-ticker finalisation can spend several minutes scoring and then
+        exact-count verifying thousands of evidence rows.  Previously its last
+        heartbeat stayed at the FINALIZE entry time, so the database and UI
+        looked stuck even while writes were progressing.  The result commit is
+        still atomic; these small best-effort patches only report liveness.
+        """
+        if not config.ready:
+            return
+        try:
+            update_scan_job_minimal(
+                config,
+                scan_id,
+                {
+                    "status": "RUNNING",
+                    "current_stage": "FINALIZE",
+                    "progress_pct": float(progress_pct),
+                    "result_status": f"FINALIZING_{phase}",
+                    "last_error": "",
+                },
+                base_job=job,
+            )
+        except Exception:
+            # Progress telemetry must never turn a completed analytical result
+            # into a failed scan.  The terminal commit below remains strict.
+            pass
+
+    _heartbeat(97.1, "CACHE_LOAD")
     universe = pd.DataFrame(job.get("universe") or [])
     for column in ("ticker", "company_name", "sector"):
         if column not in universe.columns:
@@ -913,6 +944,8 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
         # v1.9.5: a report can be young by calendar age yet still lag the active scan by
         # one full quarter. Cross-sectional calibration catches that case before ranking.
         fundamental_frame = apply_cross_sectional_fundamental_freshness(fundamental_frame, now=now)
+
+    _heartbeat(97.6, "EVIDENCE_RECONCILED")
 
     if not ksei_profiles.empty:
         profile_index = ksei_profiles.drop_duplicates("ticker").set_index("ticker")
@@ -1038,6 +1071,8 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
         output_rows.append({**metadata_map.get(ticker, {}), **profile, **position_builder(pd.Series(profile), capital, float(profile.get("risk_budget_pct") or risk_pct))})
     radar = radar_sort(pd.DataFrame(output_rows))
 
+    _heartbeat(98.2, "RADAR_SCORED")
+
     # Fundamental join integrity gate. Provider/cache success is not enough: every
     # qualifying reconciled fundamental row must survive into the final radar under
     # the same ticker key. v1.9.x once orphaned all rows by losing ticker during
@@ -1110,6 +1145,8 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
     research_memory_write_report, research_memory_verification = persist_verify_research_memory(
         config, scan_id=scan_id, rows=research_memory_rows
     )
+
+    _heartbeat(99.0, "RESEARCH_MEMORY_VERIFIED")
 
     write_report, verification, commit_report = persist_verify_scan_best_effort(
         config,

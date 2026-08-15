@@ -238,10 +238,25 @@ def parse_idx_xbrl_instance(ticker: str, xml_bytes: bytes, *, source_url: str = 
     )
     capex_names = (
         "PaymentsForAcquisitionOfPropertyPlantAndEquipment",
+        # IDX Taxonomy 2020 varies the productive-asset tag by entry point.
+        # Infrastructure/securities issuers commonly omit the word ``Plant``;
+        # several plantation/mining/infrastructure asset families also have
+        # their own cash-flow line.  Missing these facts made valid official
+        # OCF look like FCF/capex evidence was unavailable.
+        "PaymentsForAcquisitionOfPropertyAndEquipment",
+        "PaymentsForAdvancesForPurchaseOfPropertyPlantAndEquipment",
+        "PaymentsForAdvancesForPurchaseOfPropertyAndEquipment",
         "PaymentsForAcquisitionOfIntangibleAssets",
         "PaymentsForAcquisitionOfOilAndGasAssets",
         "PaymentsForAcquisitionOfMiningProperties",
         "PaymentsForAcquisitionOfInvestmentProperties",
+        "PaymentsForAcquisitionOfExplorationAndEvaluationAssets",
+        "PaymentsForAcquisitionOfIndustrialTimberPlantations",
+        "PaymentsForAcquisitionOfPlantationAssets",
+        "PaymentsForAcquisitionOfPlasmaPlantations",
+        "PaymentsForAcquisitionOfLivestockProduction",
+        "PaymentsForAcquisitionOfTollRoadConcessionRights",
+        "PaymentsForAcquisitionOfOtherNonFinancialAssets",
     )
 
     revenue = value_for(revenue_names, duration=True, target_end=current_end)

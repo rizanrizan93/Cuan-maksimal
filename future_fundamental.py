@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 
-FUTURE_FUNDAMENTAL_VERSION = "1.0.2-forward-event-integrity"
+FUTURE_FUNDAMENTAL_VERSION = "1.0.3-direct-forward-lineage"
 
 PROJECT_TERMS = (
     "project", "proyek", "expansion", "ekspansi", "capacity", "kapasitas", "plant", "pabrik",
@@ -282,6 +282,17 @@ def calculate_future_fundamental(
     contract_score = contracts["score"]
     contract_cov = contracts["coverage"]
 
+    # Keep the direct project/contract signal separate from the holistic future
+    # fundamental score.  The latter deliberately includes funding capacity,
+    # current-business confirmation, sector and management alignment; feeding it
+    # unchanged into a business-heavy ranking would count those same evidence
+    # families twice.  This direct signal is the incremental forward evidence
+    # used by Next Leader calibration.
+    direct_forward_score, direct_forward_coverage = _weighted_observed([
+        (project_score, 0.625, project_cov),
+        (contract_score, 0.375, contract_cov),
+    ])
+
     score, coverage = _weighted_observed([
         (project_score, 0.25, project_cov),
         (contract_score, 0.15, contract_cov),
@@ -350,6 +361,9 @@ def calculate_future_fundamental(
         "future_fundamental_state": state,
         "future_project_capacity_score": round(float(project_score), 1) if np.isfinite(project_score) else np.nan,
         "future_contract_backlog_visibility_score": round(float(contract_score), 1) if np.isfinite(contract_score) else np.nan,
+        "future_direct_forward_visibility_score": round(float(direct_forward_score), 1) if np.isfinite(direct_forward_score) else np.nan,
+        "future_direct_forward_visibility_coverage_pct": round(float(direct_forward_coverage), 1),
+        "future_direct_forward_lineage_state": "DIRECT_PROJECT_CONTRACT_ONLY_NO_CURRENT_FUNDAMENTAL_REUSE",
         "future_sector_policy_runway_score": round(float(sector_runway), 1) if np.isfinite(sector_runway) else np.nan,
         "future_management_alignment_score": round(float(management_alignment), 1) if np.isfinite(management_alignment) else np.nan,
         "future_funding_capacity_score": round(float(funding), 1) if np.isfinite(funding) else np.nan,
