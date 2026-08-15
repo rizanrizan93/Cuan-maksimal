@@ -6,11 +6,13 @@ import json
 
 import pandas as pd
 
+from release_contract import SCANNER_RELEASE_VERSION
+
 from persistence import DatabaseConfig, _request, database_status
 from data_providers import UNIVERSE_METADATA_COLUMNS, normalize_ticker
 from free_tier_storage import prune_scan_history_best_effort
 
-JOB_VERSION = "1.9.14-future-fundamental-db-acceleration"
+JOB_VERSION = SCANNER_RELEASE_VERSION
 ACTIVE_JOB_STATUSES = ("CREATED", "RUNNING", "PAUSED", "FINALIZE_RETRY_REQUIRED")
 TERMINAL_JOB_STATUSES = ("COMPLETED", "COMPLETED_PARTIAL_PERSISTENCE", "CANCELLED", "FAILED")
 STAGE_ORDER = (

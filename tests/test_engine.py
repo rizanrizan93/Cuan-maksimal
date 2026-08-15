@@ -116,6 +116,7 @@ def strong_fundamental():
     return {
         "fundamental_conversion_score": 78.0,
         "fundamental_coverage_pct": 85.0,
+        "fundamental_data_quality_score": 85.0,
         "fundamental_state": "FUTURE_FUNDAMENTAL_SUPPORTIVE",
         "fundamental_provenance_state": "VERIFIED_TEST_FIXTURE",
     }

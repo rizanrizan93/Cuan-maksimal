@@ -150,7 +150,7 @@ def test_auto_eod_ready_is_capped_and_not_precise():
             "idx_integrity_state": "AUTO_PUBLIC_VERIFIED_CLEAR", "corporate_action_review_cleared": True,
             "idx_integrity_unknown_critical_count": 0,
         },
-        fundamental={"fundamental_conversion_score": 75, "fundamental_coverage_pct": 80, "fundamental_state": "FUTURE_FUNDAMENTAL_SUPPORTIVE"},
+        fundamental={"fundamental_conversion_score": 75, "fundamental_coverage_pct": 80, "fundamental_data_quality_score": 82, "fundamental_state": "FUTURE_FUNDAMENTAL_SUPPORTIVE"},
         deep_reviewed=True,
     )
     assert profile["emir_decision_state"] == "EMIR_AUTO_EOD_READY"

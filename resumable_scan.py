@@ -6,6 +6,8 @@ import math
 import numpy as np
 import pandas as pd
 
+from release_contract import SCANNER_RELEASE_VERSION
+
 from autonomous_enrichment import (
     apply_regulatory_event_overlay,
     apply_cross_sectional_fundamental_freshness,
@@ -69,7 +71,7 @@ from scan_jobs import (
     update_scan_job,
 )
 
-PIPELINE_VERSION = "1.9.14-future-fundamental-db-acceleration"
+PIPELINE_VERSION = SCANNER_RELEASE_VERSION
 
 
 def _research_memory_verified_exact(report: pd.DataFrame | None) -> bool:

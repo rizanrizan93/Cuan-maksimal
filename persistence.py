@@ -8,10 +8,12 @@ import numpy as np
 import pandas as pd
 import requests
 
+from release_contract import SCANNER_RELEASE_VERSION
+
 
 BRIDGE_VERSION = "1.9.1"
 DATABASE_SCHEMA_VERSION = "emir_autonomous_schema_v9"
-SCANNER_VERSION = "1.9.14-future-fundamental-db-acceleration"
+SCANNER_VERSION = SCANNER_RELEASE_VERSION
 DEFAULT_WRITE_CHUNK_SIZE = 200
 
 

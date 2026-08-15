@@ -9,10 +9,12 @@ from urllib.parse import urlparse
 import numpy as np
 import pandas as pd
 
+from release_contract import SCANNER_RELEASE_VERSION
+
 from data_providers import normalize_ticker
 
 
-ENGINE_VERSION = "1.9.14-future-fundamental-db-acceleration"
+ENGINE_VERSION = SCANNER_RELEASE_VERSION
 MARKET_FEATURE_VERSION = "1.9.14-market-features-v1"
 FRAMEWORK_DISCLAIMER = "PUBLIC_CLEAN_ROOM_RECONSTRUCTION_NOT_AFFILIATED_NOT_PROPRIETARY"
 
