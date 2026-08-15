@@ -1,6 +1,7 @@
 import types
 
 import runtime_release
+from release_contract import SCANNER_RELEASE_VERSION
 
 
 def test_stale_loaded_modules_are_reloaded_in_dependency_order(monkeypatch):
@@ -47,7 +48,7 @@ def test_stale_loaded_modules_are_reloaded_in_dependency_order(monkeypatch):
         },
     )
 
-    assert expected.startswith("1.9.22-")
+    assert expected == SCANNER_RELEASE_VERSION
     assert calls == [
         "narrative_flow_engine",
         "future_fundamental",
