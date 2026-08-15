@@ -13,7 +13,7 @@ import os
 
 from persistence import DatabaseConfig, _request
 
-FREE_TIER_STORAGE_VERSION = "1.9.16-production-hardening"
+FREE_TIER_STORAGE_VERSION = "1.9.21-terminal-maintenance-latency"
 TERMINAL_JOB_STATUSES = {
     "COMPLETED", "COMPLETED_PARTIAL_PERSISTENCE", "CANCELLED", "FAILED",
 }
@@ -111,6 +111,71 @@ def prune_scan_history_best_effort(
     return report
 
 
+def run_outcome_maintenance_best_effort(
+    config: DatabaseConfig,
+    *,
+    scan_id: str,
+    resolve_limit: int = 500,
+    seed_limit: int = 60,
+) -> dict[str, Any]:
+    """Run bounded outcome maintenance after the terminal job commit.
+
+    This work deliberately stays outside the ``cak_scan_jobs`` status-update
+    transaction.  A terminal trigger previously resolved up to 5,000 outcomes,
+    seeded new observations and pruned the full database synchronously.  On the
+    hosted Free plan that work could exceed ``statement_timeout`` and roll back
+    an otherwise valid COMPLETED transition.
+
+    Outcome maintenance is useful but never allowed to make the analytical
+    result or its terminal checkpoint fail.  Each RPC is therefore bounded and
+    independently reported.
+    """
+    report: dict[str, Any] = {
+        "state": "SKIPPED",
+        "scan_id": str(scan_id or ""),
+        "resolve_state": "SKIPPED",
+        "seed_state": "SKIPPED",
+        "version": FREE_TIER_STORAGE_VERSION,
+    }
+    if not config.ready or not scan_id:
+        return report
+
+    calls = (
+        (
+            "resolve",
+            "cak_resolve_outcome_memory",
+            {"p_limit": max(1, min(1000, int(resolve_limit or 500)))},
+        ),
+        (
+            "seed",
+            "cak_seed_outcomes_for_scan",
+            {
+                "p_scan_id": str(scan_id),
+                "p_limit": max(1, min(100, int(seed_limit or 60))),
+            },
+        ),
+    )
+    completed = 0
+    for label, function_name, payload in calls:
+        try:
+            _request(
+                config,
+                "POST",
+                f"rpc/{function_name}",
+                payload=payload,
+                timeout=20,
+                return_rows=False,
+            )
+            report[f"{label}_state"] = "COMPLETED"
+            completed += 1
+        except Exception as exc:
+            report[f"{label}_state"] = "FAILED_BEST_EFFORT"
+            report[f"{label}_error"] = f"{type(exc).__name__}: {exc}"[:300]
+
+    report["state"] = "COMPLETED" if completed == len(calls) else "PARTIAL" if completed else "FAILED_BEST_EFFORT"
+    return report
+
+
 def prune_research_memory_best_effort(
     config: DatabaseConfig,
     *,
@@ -204,4 +269,5 @@ __all__ = [
     "free_tier_storage_enabled",
     "prune_scan_history_best_effort",
     "prune_research_memory_best_effort",
+    "run_outcome_maintenance_best_effort",
 ]

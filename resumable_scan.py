@@ -59,7 +59,7 @@ from persistent_cache import (
 from research_memory import build_research_memory_rows, persist_verify_research_memory, load_replayable_narrative_events
 from future_fundamental import calculate_future_fundamental, future_fundamental_evidence_frame
 from persistent_direct_evidence import load_verified_direct_evidence
-from free_tier_storage import prune_scan_history_best_effort
+from free_tier_storage import prune_scan_history_best_effort, run_outcome_maintenance_best_effort
 
 from top3_dashboard import enrich_dashboard_scores, select_top3, select_next_leaders
 from scan_jobs import (
@@ -1204,6 +1204,7 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
             else ""
         ),
     }, base_job=job)
+    outcome_maintenance = run_outcome_maintenance_best_effort(config, scan_id=scan_id)
     storage_housekeeping = prune_scan_history_best_effort(
         config, keep_scan_runs=2, keep_terminal_jobs=2, exclude_scan_id=scan_id
     )
@@ -1246,6 +1247,7 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
         "expected_research_memory": len(research_memory_rows),
         "deep_review_scope": str(settings.get("deep_review_scope") or "ALL_ELIGIBLE"),
         "job_status": terminal_status,
+        "outcome_maintenance": outcome_maintenance,
         "free_tier_storage_housekeeping": storage_housekeeping,
     }
     return result, updated
