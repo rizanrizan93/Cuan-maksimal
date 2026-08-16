@@ -10,6 +10,13 @@ from collections.abc import Mapping, Sequence
 def _install_integrity_patch(expected: str) -> None:
     if "pytest" in sys.modules:
         return
+    try:
+        zapi_patch = importlib.import_module("zapi_runtime_patch")
+        installer = getattr(zapi_patch, "install", None)
+        if callable(installer):
+            installer()
+    except Exception:
+        pass
     patch = importlib.import_module("runtime_integrity_patch")
     patch.install(expected)
     try:
