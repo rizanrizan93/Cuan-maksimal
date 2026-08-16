@@ -1,0 +1,92 @@
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+import zapi_flow_enrichment as zapi
+
+
+def _history() -> pd.DataFrame:
+    dates = pd.bdate_range(end=pd.Timestamp.now(tz="Asia/Jakarta").tz_localize(None).normalize(), periods=20)
+    rows = []
+    for ticker, direction in (("POS1", 1.0), ("POS2", 0.6), ("NEG1", -0.6), ("NEG2", -1.0)):
+        for i, day in enumerate(dates):
+            volume = 10_000_000.0
+            net = direction * volume * (0.006 + 0.0001 * (i % 3))
+            buy = 1_100_000.0 + max(net, 0.0)
+            sell = 1_100_000.0 + max(-net, 0.0)
+            rows.append(
+                {
+                    "ticker": ticker,
+                    "trade_date": day,
+                    "foreign_buy_shares": buy,
+                    "foreign_sell_shares": sell,
+                    "foreign_net_shares": net,
+                    "volume": volume,
+                    "source": "SYNTHETIC_ZAPI",
+                    "flow_unit": "SHARES",
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def test_foreign_flow_score_separates_accumulation_and_distribution() -> None:
+    scored = zapi.score_foreign_history(_history())
+    pos = scored.set_index("ticker").loc["POS1"]
+    neg = scored.set_index("ticker").loc["NEG2"]
+    assert float(pos["zapi_foreign_flow_score"]) > float(neg["zapi_foreign_flow_score"])
+    assert pos["zapi_foreign_state"] == "NET_ACCUMULATION"
+    assert neg["zapi_foreign_state"] == "NET_DISTRIBUTION"
+    assert float(pos["zapi_foreign_flow_coverage_pct"]) >= 95.0
+
+
+def test_emir_conviction_and_smart_money_overlay_are_bounded(monkeypatch) -> None:
+    features = pd.DataFrame(
+        [
+            {
+                "ticker": "TEST",
+                "zapi_foreign_flow_score": 100.0,
+                "zapi_foreign_flow_coverage_pct": 100.0,
+                "zapi_accumulation_confirmation_score": 90.0,
+                "zapi_smart_money_confirmation_score": 90.0,
+                "zapi_smc_flow_confirmation_score": 100.0,
+                "zapi_foreign_state": "NET_ACCUMULATION",
+            }
+        ]
+    )
+    monkeypatch.setattr(zapi, "get_zapi_features", lambda tickers: (features.copy(), {"state": "TEST"}))
+    radar = pd.DataFrame(
+        [
+            {
+                "ticker": "TEST.JK",
+                "smart_money_score": 60.0,
+                "smart_money_coverage_pct": 80.0,
+                "emir_conviction_score": 70.0,
+            }
+        ]
+    )
+    out = zapi.enrich_emir_radar(radar).iloc[0]
+    assert np.isclose(float(out["smart_money_score"]), 69.0)
+    assert np.isclose(float(out["zapi_smart_money_confirmation_weight_pct"]), 30.0)
+    assert np.isclose(float(out["zapi_emir_conviction_delta"]), 2.5)
+    assert np.isclose(float(out["emir_conviction_score"]), 72.5)
+
+
+def test_emir_dashboard_flow_blend_is_bounded() -> None:
+    frame = pd.DataFrame(
+        [
+            {
+                "ticker": "TEST",
+                "dashboard_flow_score": 60.0,
+                "dashboard_silent_accum_score": 50.0,
+                "distribution_score": 20.0,
+                "zapi_foreign_flow_score": 100.0,
+                "zapi_accumulation_confirmation_score": 90.0,
+                "zapi_foreign_flow_coverage_pct": 100.0,
+            }
+        ]
+    )
+    out = zapi.blend_emir_dashboard_output(frame).iloc[0]
+    assert np.isclose(float(out["dashboard_flow_score"]), 72.0)
+    assert np.isclose(float(out["dashboard_silent_accum_score"]), 58.0)
+    assert 58.0 <= float(out["dashboard_accumulation_dominance_pct"]) <= 80.0
