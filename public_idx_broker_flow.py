@@ -34,21 +34,20 @@ def load_public_cache() -> pd.DataFrame:
         response.raise_for_status()
         return _normalize(pd.read_csv(BytesIO(gzip.decompress(response.content))))
     except Exception:
-        return pd.DataFrame()
+        return _normalize(pd.DataFrame())
 
 
 def _normalize(frame: pd.DataFrame | None) -> pd.DataFrame:
+    columns = ["trade_date", "ticker", "broker_code", "buy_value", "sell_value", "buy_volume", "sell_volume", "buy_avg", "sell_avg", "net_value", "net_volume", "gross_value", "source", "source_verified", "provenance_state", "side", "net_rank"]
     if not isinstance(frame, pd.DataFrame) or frame.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=columns)
     out = frame.copy()
     out["ticker"] = out["ticker"].map(_canon)
     out["trade_date"] = pd.to_datetime(out["trade_date"], errors="coerce").dt.normalize()
     for column in ("buy_value", "sell_value", "buy_volume", "sell_volume", "buy_avg", "sell_avg", "net_value", "net_volume", "gross_value", "net_rank"):
         if column in out.columns:
             out[column] = pd.to_numeric(out[column], errors="coerce")
-    return out.dropna(subset=["ticker", "trade_date"]).drop_duplicates(
-        ["trade_date", "ticker", "broker_code", "side"], keep="last"
-    )
+    return out.dropna(subset=["ticker", "trade_date"]).drop_duplicates(["trade_date", "ticker", "broker_code", "side"], keep="last")
 
 
 def _cross_section(series: pd.Series) -> pd.Series:
@@ -57,7 +56,7 @@ def _cross_section(series: pd.Series) -> pd.Series:
     score = pd.Series(np.nan, index=values.index, dtype=float)
     if int(valid.sum()) >= 3:
         score.loc[valid] = values.loc[valid].rank(pct=True) * 100.0
-    elif int(valid.sum()):
+    elif int(valid):
         score.loc[valid] = 50.0
     return score
 
@@ -66,8 +65,10 @@ def score_broker_history(history: pd.DataFrame, universe: Iterable[Any]) -> pd.D
     frame = _normalize(history)
     names = sorted({_canon(value) for value in universe if _canon(value)})
     rows: list[dict[str, Any]] = []
+    if "ticker" in frame.columns and not frame.empty:
+        frame = frame[frame["ticker"].isin(names)]
     for ticker in names:
-        local = frame[frame["ticker"].eq(ticker)] if not frame.empty else pd.DataFrame()
+        local = frame[frame["ticker"].eq(ticker)].copy() if "ticker" in frame.columns else pd.DataFrame()
         if local.empty:
             rows.append({"ticker": ticker})
             continue
@@ -107,6 +108,8 @@ def score_broker_history(history: pd.DataFrame, universe: Iterable[Any]) -> pd.D
             "broker_flow_provenance": "OFFICIAL_IDX_PUBLIC_EOD_TRADE_DETAIL_PARTICIPANT_FLOW_NOT_BENEFICIAL_OWNER",
         })
     out = pd.DataFrame(rows)
+    if out.empty:
+        return out
     out["broker_net_score"] = _cross_section(out["broker_top_buyer_net_value_20d"])
     out["broker_accumulation_score"] = (
         0.35 * out["broker_net_score"].fillna(50.0)
