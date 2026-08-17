@@ -47,6 +47,13 @@ def _install_integrity_patch(expected: str) -> None:
             installer()
     except Exception:
         pass
+    try:
+        lane_patch = importlib.import_module("top3_lane_patch")
+        installer = getattr(lane_patch, "install", None)
+        if callable(installer):
+            installer()
+    except Exception:
+        pass
 
 
 def refresh_release_runtime(
