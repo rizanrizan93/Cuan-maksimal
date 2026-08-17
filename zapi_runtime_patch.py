@@ -4,8 +4,9 @@ from __future__ import annotations
 
 ZAPI remains a confirmation layer. It never identifies brokers/beneficial owners,
 never fabricates a cost basis, and never self-authorizes a real-money entry.
-This patch also separates hard blockers from direct-evidence gaps and applies a
-coverage-aware foreign-flow shock guard to execution timing.
+This patch separates genuine hard blockers from direct-evidence gaps, applies a
+coverage-aware foreign-flow shock guard, exposes a proxy/manual authorization
+tier when appropriate, and records pre/post ZAPI fields for forward OOS review.
 """
 
 from functools import wraps
@@ -19,8 +20,13 @@ from zapi_flow_enrichment import (
     blend_emir_dashboard_output,
     enrich_emir_radar,
 )
+from zapi_post_calibration import (
+    POST_CALIBRATION_VERSION,
+    enrich_emir_shadow,
+    refine_emir_proxy_authorization_tier,
+)
 
-PATCH_VERSION = "1.1.0-emir-zapi-execution-guard"
+PATCH_VERSION = "1.2.0-emir-zapi-post-calibration"
 
 _EVIDENCE_GAP_FLAGS = {
     "DIRECT_BID_OFFER_TRIGGER_MISSING_PROXY_USED",
@@ -28,6 +34,12 @@ _EVIDENCE_GAP_FLAGS = {
     "IDX_CRITICAL_FIELDS_UNKNOWN_NOT_VERIFIED",
     "IDX_INTEGRITY_EVIDENCE_MISSING",
     "IDX_DIRECT_INTEGRITY_MISSING_AUTO_PUBLIC_PROXY_USED",
+}
+
+_NON_RISK_SENTINELS = {
+    "NO_MAJOR_EMIR_IDX_FRAMEWORK_RISK",
+    "NO_MAJOR_RISK",
+    "NONE",
 }
 
 
@@ -213,7 +225,7 @@ def _apply_foreign_shock_guard(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _apply_gate_audit(frame: pd.DataFrame) -> pd.DataFrame:
-    """Separate hard blockers, manual checks, and missing direct evidence."""
+    """Separate genuine hard blockers, manual checks, and direct-evidence gaps."""
     if not isinstance(frame, pd.DataFrame) or frame.empty:
         return frame.copy() if isinstance(frame, pd.DataFrame) else pd.DataFrame()
     out = frame.copy()
@@ -226,11 +238,17 @@ def _apply_gate_audit(frame: pd.DataFrame) -> pd.DataFrame:
     explanations: list[str] = []
 
     for _, row in out.iterrows():
-        blockers = _tokens(row.get("real_money_block_reasons"))
+        blocker_tokens = _tokens(row.get("real_money_block_reasons"))
+        blocker_gaps = [flag for flag in blocker_tokens if flag in _EVIDENCE_GAP_FLAGS]
+        hard_blockers = [flag for flag in blocker_tokens if flag not in _EVIDENCE_GAP_FLAGS]
         manual = _tokens(row.get("real_money_manual_conditions"))
         risks = _tokens(row.get("risk_flags"))
-        gaps = [flag for flag in risks if flag in _EVIDENCE_GAP_FLAGS]
-        material_risks = [flag for flag in risks if flag not in _EVIDENCE_GAP_FLAGS]
+        risk_gaps = [flag for flag in risks if flag in _EVIDENCE_GAP_FLAGS]
+        gaps = list(dict.fromkeys([*blocker_gaps, *risk_gaps]))
+        material_risks = [
+            flag for flag in risks
+            if flag not in _EVIDENCE_GAP_FLAGS and flag.upper() not in _NON_RISK_SENTINELS
+        ]
         gate = str(row.get("real_money_gate_state") or "UNKNOWN")
 
         if gate == "REAL_MONEY_DIRECT_VERIFIED_READY":
@@ -239,19 +257,21 @@ def _apply_gate_audit(frame: pd.DataFrame) -> pd.DataFrame:
             gate_class = "MANUAL_CONFIRMATION"
         elif gate == "REAL_MONEY_WAIT_TIMING":
             gate_class = "WAIT_TIMING"
-        elif blockers:
+        elif hard_blockers:
             gate_class = "HARD_BLOCK"
+        elif gaps:
+            gate_class = "EVIDENCE_GAP_ONLY_OR_OTHER"
         else:
             gate_class = "NOT_AUTHORIZED_OTHER"
 
-        hard_counts.append(len(blockers))
+        hard_counts.append(len(hard_blockers))
         manual_counts.append(len(manual))
         gap_counts.append(len(gaps))
         gaps_text.append(_join_tokens(gaps))
         material_risks_text.append(_join_tokens(material_risks))
         gate_classes.append(gate_class)
         explanations.append(
-            f"{gate_class}: hard_blockers={len(blockers)}, manual_conditions={len(manual)}, "
+            f"{gate_class}: hard_blockers={len(hard_blockers)}, manual_conditions={len(manual)}, "
             f"direct_evidence_gaps={len(gaps)}, material_risk_flags={len(material_risks)}"
         )
 
@@ -262,13 +282,13 @@ def _apply_gate_audit(frame: pd.DataFrame) -> pd.DataFrame:
     out["real_money_material_risk_flags"] = material_risks_text
     out["real_money_gate_class"] = gate_classes
     out["real_money_gate_explanation"] = explanations
-    out["real_money_gate_audit_policy"] = "HARD_BLOCKERS_DISTINCT_FROM_MANUAL_CHECKS_AND_DIRECT_EVIDENCE_GAPS"
+    out["real_money_gate_audit_policy"] = "GENUINE_HARD_BLOCKERS_DISTINCT_FROM_MANUAL_CHECKS_AND_DIRECT_EVIDENCE_GAPS"
     return out
 
 
 def _wrap_dashboard_scores(owner: Any) -> None:
     original = getattr(owner, "enrich_dashboard_scores", None)
-    if not callable(original) or getattr(original, "__zapi_flow_confirmation_v1__", False):
+    if not callable(original) or getattr(original, "__zapi_flow_confirmation_v2__", False):
         return
 
     @wraps(original)
@@ -287,11 +307,13 @@ def _wrap_dashboard_scores(owner: Any) -> None:
                 out = _adjust_cost_confidence(out)
                 out = _apply_foreign_shock_guard(out)
                 out = _apply_gate_audit(out)
+                out = refine_emir_proxy_authorization_tier(out)
+                out = enrich_emir_shadow(out)
             except Exception:
                 pass
         return out
 
-    wrapped.__zapi_flow_confirmation_v1__ = True
+    wrapped.__zapi_flow_confirmation_v2__ = True
     setattr(owner, "enrich_dashboard_scores", wrapped)
 
 
@@ -306,12 +328,15 @@ def install() -> dict[str, str]:
     return {
         "patch_version": PATCH_VERSION,
         "zapi_version": ZAPI_FLOW_ENRICHMENT_VERSION,
+        "post_calibration_version": POST_CALIBRATION_VERSION,
         "conviction_policy": "BOUNDED_PLUS_MINUS_2_5_POINT_FOREIGN_FLOW_CONFIRMATION",
         "smart_money_policy": "MAX_30_PERCENT_CONFIRMATION_WEIGHT_COVERAGE_AWARE",
         "smc_policy": "PRICE_STRUCTURE_PRIMARY_ZAPI_FLOW_CONFIRMATION_ONLY",
         "cost_policy": "ZAPI_MAY_ADJUST_PROXY_CONFIDENCE_NOT_COST_PRICE_DIRECT_BROKER_WINS",
         "execution_guard_policy": "SELL_SHOCK_CAN_DELAY_OR_REQUIRE_RECLAIM_ZAPI_CAN_NEVER_PROMOTE_READY",
-        "gate_audit_policy": "HARD_BLOCKERS_SEPARATE_FROM_MANUAL_CONDITIONS_AND_DIRECT_EVIDENCE_GAPS",
+        "gate_audit_policy": "GENUINE_HARD_BLOCKERS_SEPARATE_FROM_MANUAL_CONDITIONS_AND_DIRECT_EVIDENCE_GAPS",
+        "proxy_authorization_policy": "EVIDENCE_GAP_ONLY_MAY_REQUIRE_MANUAL_CONFIRMATION_NEVER_DIRECT_READY",
+        "shadow_policy": "CAPTURE_PRE_POST_ZAPI_CONVICTION_SMART_MONEY_AND_COST_CONFIDENCE_FOR_5D_20D_60D_OOS",
         "identity_policy": "FOREIGN_FLOW_IS_NOT_BROKER_OR_BENEFICIAL_OWNER_IDENTITY",
     }
 
