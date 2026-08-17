@@ -61,6 +61,13 @@ def _install_integrity_patch(expected: str) -> None:
             installer()
     except Exception:
         pass
+    try:
+        research_top3_patch = importlib.import_module("execution_research_top3_runtime_patch")
+        installer = getattr(research_top3_patch, "install", None)
+        if callable(installer):
+            installer()
+    except Exception:
+        pass
 
 
 def refresh_release_runtime(
