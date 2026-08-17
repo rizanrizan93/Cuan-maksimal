@@ -54,9 +54,10 @@ def _cross_section(series: pd.Series) -> pd.Series:
     values = pd.to_numeric(series, errors="coerce")
     valid = values.notna()
     score = pd.Series(np.nan, index=values.index, dtype=float)
-    if int(valid.sum()) >= 3:
+    count = int(valid.sum())
+    if count >= 3:
         score.loc[valid] = values.loc[valid].rank(pct=True) * 100.0
-    elif int(valid):
+    elif count > 0:
         score.loc[valid] = 50.0
     return score
 
@@ -70,7 +71,7 @@ def score_broker_history(history: pd.DataFrame, universe: Iterable[Any]) -> pd.D
     for ticker in names:
         local = frame[frame["ticker"].eq(ticker)].copy() if "ticker" in frame.columns else pd.DataFrame()
         if local.empty:
-            rows.append({"ticker": ticker})
+            rows.append({"ticker": ticker, "broker_flow_coverage_pct": 0.0, "broker_accumulation_state": "NO_DATA", "broker_flow_version": VERSION})
             continue
         dates = sorted(local["trade_date"].dropna().unique())[-20:]
         recent = local[local["trade_date"].isin(dates)]
@@ -92,38 +93,19 @@ def score_broker_history(history: pd.DataFrame, universe: Iterable[Any]) -> pd.D
         latest_buy = latest[latest["side"].eq("TOP_NET_BUYER")].sort_values("net_rank")
         latest_broker = str(latest_buy.iloc[0]["broker_code"]) if not latest_buy.empty else ""
         latest_avg = _num(latest_buy.iloc[0].get("buy_avg")) if not latest_buy.empty else np.nan
-        rows.append({
-            "ticker": ticker,
-            "broker_flow_observed_days": int(recent["trade_date"].nunique()),
-            "broker_flow_latest_date": latest_date,
-            "broker_top_buyer_code": top_broker,
-            "broker_latest_top_buyer_code": latest_broker,
-            "broker_top3_buyer_persistence_20d_pct": persistence,
-            "broker_top_buyer_net_value_20d": top_net,
-            "broker_buyer_concentration_pct": concentration,
-            "broker_buy_sell_dominance_score": dominance_score,
-            "broker_latest_top_buyer_buy_avg": latest_avg,
-            "broker_flow_coverage_pct": min(100.0, 100.0 * len(dates) / 20.0),
-            "broker_flow_source": SOURCE_NAME,
-            "broker_flow_provenance": "OFFICIAL_IDX_PUBLIC_EOD_TRADE_DETAIL_PARTICIPANT_FLOW_NOT_BENEFICIAL_OWNER",
-        })
+        rows.append({"ticker": ticker, "broker_flow_observed_days": int(recent["trade_date"].nunique()), "broker_flow_latest_date": latest_date, "broker_top_buyer_code": top_broker, "broker_latest_top_buyer_code": latest_broker, "broker_top3_buyer_persistence_20d_pct": persistence, "broker_top_buyer_net_value_20d": top_net, "broker_buyer_concentration_pct": concentration, "broker_buy_sell_dominance_score": dominance_score, "broker_latest_top_buyer_buy_avg": latest_avg, "broker_flow_coverage_pct": min(100.0, 100.0 * len(dates) / 20.0), "broker_flow_source": SOURCE_NAME, "broker_flow_provenance": "OFFICIAL_IDX_PUBLIC_EOD_TRADE_DETAIL_PARTICIPANT_FLOW_NOT_BENEFICIAL_OWNER", "broker_flow_version": VERSION})
     out = pd.DataFrame(rows)
     if out.empty:
         return out
+    if "broker_top_buyer_net_value_20d" not in out.columns:
+        out["broker_net_score"] = np.nan
+        out["broker_accumulation_score"] = np.nan
+        out["broker_smart_money_confirmation_score"] = np.nan
+        return out
     out["broker_net_score"] = _cross_section(out["broker_top_buyer_net_value_20d"])
-    out["broker_accumulation_score"] = (
-        0.35 * out["broker_net_score"].fillna(50.0)
-        + 0.25 * pd.to_numeric(out["broker_top3_buyer_persistence_20d_pct"], errors="coerce").fillna(0)
-        + 0.20 * pd.to_numeric(out["broker_buyer_concentration_pct"], errors="coerce").fillna(0)
-        + 0.20 * pd.to_numeric(out["broker_buy_sell_dominance_score"], errors="coerce").fillna(50)
-    ).clip(0, 100).round(1)
+    out["broker_accumulation_score"] = (0.35 * out["broker_net_score"].fillna(50.0) + 0.25 * pd.to_numeric(out["broker_top3_buyer_persistence_20d_pct"], errors="coerce").fillna(0) + 0.20 * pd.to_numeric(out["broker_buyer_concentration_pct"], errors="coerce").fillna(0) + 0.20 * pd.to_numeric(out["broker_buy_sell_dominance_score"], errors="coerce").fillna(50)).clip(0, 100).round(1)
     out["broker_smart_money_confirmation_score"] = (0.70 * out["broker_accumulation_score"] + 0.30 * out["broker_net_score"].fillna(50)).clip(0, 100).round(1)
-    out["broker_accumulation_state"] = np.select(
-        [out["broker_accumulation_score"].ge(70), out["broker_accumulation_score"].le(35)],
-        ["PARTICIPANT_ACCUMULATION", "PARTICIPANT_DISTRIBUTION"],
-        default="PARTICIPANT_MIXED",
-    )
-    out["broker_flow_version"] = VERSION
+    out["broker_accumulation_state"] = np.select([out["broker_accumulation_score"].ge(70), out["broker_accumulation_score"].le(35)], ["PARTICIPANT_ACCUMULATION", "PARTICIPANT_DISTRIBUTION"], default="PARTICIPANT_MIXED")
     return out
 
 
