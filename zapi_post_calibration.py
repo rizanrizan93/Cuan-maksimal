@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 
 
-POST_CALIBRATION_VERSION = "1.0.0-emir-zapi-post-calibration"
+POST_CALIBRATION_VERSION = "1.0.1-emir-zapi-post-calibration"
 
 
 def _finite(value: Any, default: float = np.nan) -> float:
@@ -128,6 +128,13 @@ def refine_emir_proxy_authorization_tier(frame: pd.DataFrame) -> pd.DataFrame:
                     out.at[idx, "production_ready"] = False
                 if "production_tier" in out.columns:
                     out.at[idx, "production_tier"] = "MANUAL_CONFIRMATION_REQUIRED"
+                if "real_money_gate_class" in out.columns:
+                    out.at[idx, "real_money_gate_class"] = "MANUAL_CONFIRMATION"
+                if "real_money_gate_explanation" in out.columns:
+                    out.at[idx, "real_money_gate_explanation"] = (
+                        f"MANUAL_CONFIRMATION: hard_blockers=0, manual_conditions={manual_count}, "
+                        f"direct_evidence_gaps={gap_count}; evidence-gap-only block reclassified without direct READY promotion"
+                    )
         elif candidate and entry_candidate and manual_count > 0:
             tier = "MANUAL_CONFIRMATION_REQUIRED"
             is_eligible = True
