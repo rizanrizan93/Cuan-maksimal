@@ -44,6 +44,18 @@ def test_research_top3_falls_back_to_raw_score_when_rank_is_missing():
     assert out["ticker"].tolist() == ["BBB.JK", "CCC.JK", "AAA.JK"]
 
 
+def test_research_top3_falls_back_when_rank_column_exists_but_is_all_na():
+    frame = pd.DataFrame([
+        {"ticker": "AAA.JK", "raw_research_rank": pd.NA, "raw_research_score": pd.NA, "emir_final_score": 62.0, "emir_evidence_coverage_pct": 80.0},
+        {"ticker": "BBB.JK", "raw_research_rank": pd.NA, "raw_research_score": pd.NA, "emir_final_score": 84.0, "emir_evidence_coverage_pct": 50.0},
+        {"ticker": "CCC.JK", "raw_research_rank": pd.NA, "raw_research_score": pd.NA, "emir_final_score": 74.0, "emir_evidence_coverage_pct": 90.0},
+    ])
+    out = patch.select_research_top3(frame, 3)
+    assert out["ticker"].tolist() == ["BBB.JK", "CCC.JK", "AAA.JK"]
+    assert out["selection_lane"].eq("RAW_RESEARCH_TOP3").all()
+    assert out["selection_rank"].tolist() == [1, 2, 3]
+
+
 def test_install_routes_both_dashboard_namespaces(monkeypatch):
     import top3_dashboard
     import top3_dashboard_legacy
