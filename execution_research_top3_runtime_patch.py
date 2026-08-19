@@ -7,9 +7,6 @@ without depending on the guarded/real-money selector or on a recomputed three-ra
 contract. Real-money execution selection remains in its dedicated selector.
 """
 
-from functools import wraps
-from typing import Any
-
 import numpy as np
 import pandas as pd
 
@@ -23,16 +20,15 @@ def _num(frame: pd.DataFrame, column: str, default: float = np.nan) -> pd.Series
 
 
 def select_research_top3(radar: pd.DataFrame, limit: int = 3) -> pd.DataFrame:
-    """Return the raw research priorities and never use execution gates as a filter."""
+    """Return raw research priorities and never use execution gates as a filter."""
     if not isinstance(radar, pd.DataFrame) or radar.empty:
         return radar.copy() if isinstance(radar, pd.DataFrame) else pd.DataFrame()
 
     local = radar.copy()
     raw_rank = _num(local, "raw_research_rank")
     raw_score = _num(local, "raw_research_score")
+    evidence_coverage = _num(local, "emir_evidence_coverage_pct", 0.0).fillna(0.0)
 
-    # Existing production scans normally have raw_research_rank. If an older
-    # persisted result does not, derive a research-only ordering from score.
     if raw_rank.notna().any():
         local["_research_rank"] = raw_rank
         local["_research_score"] = raw_score
@@ -48,14 +44,19 @@ def select_research_top3(radar: pd.DataFrame, limit: int = 3) -> pd.DataFrame:
             fallback_score = _num(local, "emir_final_score")
         local["_research_rank"] = fallback_score.rank(method="first", ascending=False, na_option="bottom")
         local["_research_score"] = fallback_score
+        local["_research_evidence_coverage"] = evidence_coverage
         local = local.sort_values(
-            ["_research_score", "emir_evidence_coverage_pct"],
+            ["_research_score", "_research_evidence_coverage"],
             ascending=[False, False],
             na_position="last",
             kind="stable",
         )
 
-    local = local.head(max(0, int(limit))).drop(columns=["_research_rank", "_research_score"], errors="ignore").reset_index(drop=True)
+    local = (
+        local.head(max(0, int(limit)))
+        .drop(columns=["_research_rank", "_research_score", "_research_evidence_coverage"], errors="ignore")
+        .reset_index(drop=True)
+    )
     if local.empty:
         return local
 
