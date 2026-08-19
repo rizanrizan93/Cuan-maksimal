@@ -1,21 +1,20 @@
 import pandas as pd
 
-from execution_research_top3_runtime_patch import install
+import execution_research_top3_runtime_patch as patch
 
 
 def test_install_routes_dashboard_top3_to_research_lane(monkeypatch):
     import top3_dashboard
-    from top3_lane_patch import select_research_top3
 
     monkeypatch.setattr(top3_dashboard, "select_top3", object(), raising=False)
-    result = install()
+    result = patch.install()
 
     assert result["research_display_lane"] == "RAW_RESEARCH_TOP3"
-    assert top3_dashboard.select_top3 is select_research_top3
+    assert top3_dashboard.select_top3 is patch.select_research_top3
 
 
 def test_research_display_keeps_three_candidates_even_when_execution_is_empty():
-    from top3_lane_patch import select_research_top3, select_execution_top3
+    from top3_lane_patch import select_execution_top3
 
     frame = pd.DataFrame([
         {
@@ -53,7 +52,7 @@ def test_research_display_keeps_three_candidates_even_when_execution_is_empty():
         },
     ])
 
-    research = select_research_top3(frame, 3)
+    research = patch.select_research_top3(frame, 3)
     execution = select_execution_top3(frame, 3)
 
     assert research["ticker"].tolist() == ["PKPK.JK", "SPTO.JK", "MARK.JK"]
