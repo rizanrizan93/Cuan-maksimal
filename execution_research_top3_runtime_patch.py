@@ -10,7 +10,7 @@ contract. Real-money execution selection remains in its dedicated selector.
 import numpy as np
 import pandas as pd
 
-PATCH_VERSION = "2.0.0-deterministic-research-top3"
+PATCH_VERSION = "2.1.0-deterministic-research-top3-fallback"
 
 
 def _num(frame: pd.DataFrame, column: str, default: float = np.nan) -> pd.Series:
@@ -20,7 +20,14 @@ def _num(frame: pd.DataFrame, column: str, default: float = np.nan) -> pd.Series
 
 
 def select_research_top3(radar: pd.DataFrame, limit: int = 3) -> pd.DataFrame:
-    """Return raw research priorities and never use execution gates as a filter."""
+    """Return raw research priorities and never use execution gates as a filter.
+
+    A previous runtime could receive pre-created rank columns containing only NA
+    values. The selector treated those columns as authoritative and returned an
+    empty table even though the underlying Emir conviction/final score existed.
+    The raw lane now falls back when rank values are unavailable, not merely when
+    the rank columns are absent.
+    """
     if not isinstance(radar, pd.DataFrame) or radar.empty:
         return radar.copy() if isinstance(radar, pd.DataFrame) else pd.DataFrame()
 
@@ -39,11 +46,22 @@ def select_research_top3(radar: pd.DataFrame, limit: int = 3) -> pd.DataFrame:
             kind="stable",
         )
     else:
+        # Rank columns can exist but be entirely empty after an upstream partial
+        # join/contract step. Reconstruct the research ordering from the strongest
+        # available research score instead of silently returning zero candidates.
         fallback_score = raw_score
         if not fallback_score.notna().any():
-            fallback_score = _num(local, "emir_final_score")
-        local["_research_rank"] = fallback_score.rank(method="first", ascending=False, na_option="bottom")
-        local["_research_score"] = fallback_score
+            for column in ("emir_final_score", "emir_conviction_score", "next_leader_quality_pre_confidence", "next_leader_score"):
+                candidate = _num(local, column)
+                if candidate.notna().any():
+                    fallback_score = candidate
+                    break
+        if fallback_score.notna().any():
+            local["_research_rank"] = fallback_score.rank(method="first", ascending=False, na_option="bottom")
+            local["_research_score"] = fallback_score
+        else:
+            local["_research_rank"] = pd.Series(np.nan, index=local.index, dtype=float)
+            local["_research_score"] = pd.Series(np.nan, index=local.index, dtype=float)
         local["_research_evidence_coverage"] = evidence_coverage
         local = local.sort_values(
             ["_research_score", "_research_evidence_coverage"],
@@ -88,6 +106,7 @@ def install() -> dict[str, str]:
         "guarded_lane": "GUARDED_DECISION_TOP3",
         "execution_lane": "EXECUTION_TOP3_MANUAL_OR_DIRECT",
         "policy": "RESEARCH_DISPLAY_CANNOT_BE_EMPTIED_BY_REAL_MONEY_GATE",
+        "fallback_policy": "RESEARCH_RANK_EMPTY_FALLS_BACK_TO_EMIR_SCORE",
     }
 
 
