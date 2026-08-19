@@ -1,26 +1,93 @@
 from __future__ import annotations
 
-"""Restore the dashboard's Execution Research Top 3 semantics.
+"""Deterministic runtime routing for Emir's Execution Research Top 3 tab.
 
-The dashboard tab is explicitly research-oriented. It must show the same
-research candidates as before, while the guarded and real-money selectors
-remain available separately for decision/execution use.
+The tab is research-only. It must remain populated from the raw research lane
+without depending on the guarded/real-money selector or on a recomputed three-rank
+contract. Real-money execution selection remains in its dedicated selector.
 """
+
+from functools import wraps
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+PATCH_VERSION = "2.0.0-deterministic-research-top3"
+
+
+def _num(frame: pd.DataFrame, column: str, default: float = np.nan) -> pd.Series:
+    if column not in frame.columns:
+        return pd.Series(default, index=frame.index, dtype=float)
+    return pd.to_numeric(frame[column], errors="coerce")
+
+
+def select_research_top3(radar: pd.DataFrame, limit: int = 3) -> pd.DataFrame:
+    """Return the raw research priorities and never use execution gates as a filter."""
+    if not isinstance(radar, pd.DataFrame) or radar.empty:
+        return radar.copy() if isinstance(radar, pd.DataFrame) else pd.DataFrame()
+
+    local = radar.copy()
+    raw_rank = _num(local, "raw_research_rank")
+    raw_score = _num(local, "raw_research_score")
+
+    # Existing production scans normally have raw_research_rank. If an older
+    # persisted result does not, derive a research-only ordering from score.
+    if raw_rank.notna().any():
+        local["_research_rank"] = raw_rank
+        local["_research_score"] = raw_score
+        local = local.sort_values(
+            ["_research_rank", "_research_score"],
+            ascending=[True, False],
+            na_position="last",
+            kind="stable",
+        )
+    else:
+        fallback_score = raw_score
+        if not fallback_score.notna().any():
+            fallback_score = _num(local, "emir_final_score")
+        local["_research_rank"] = fallback_score.rank(method="first", ascending=False, na_option="bottom")
+        local["_research_score"] = fallback_score
+        local = local.sort_values(
+            ["_research_score", "emir_evidence_coverage_pct"],
+            ascending=[False, False],
+            na_position="last",
+            kind="stable",
+        )
+
+    local = local.head(max(0, int(limit))).drop(columns=["_research_rank", "_research_score"], errors="ignore").reset_index(drop=True)
+    if local.empty:
+        return local
+
+    local.insert(0, "selection_rank", range(1, len(local) + 1))
+    local.insert(1, "selection_lane", "RAW_RESEARCH_TOP3")
+    local.insert(
+        2,
+        "selection_lane_note",
+        "Research priority only; hard blockers may appear. This table is not capital authorization.",
+    )
+    local["execution_research_top3_patch_version"] = PATCH_VERSION
+    return local
 
 
 def install() -> dict[str, str]:
     import top3_dashboard
-    from top3_lane_patch import select_research_top3
+    import top3_dashboard_legacy
 
-    # app.py imports select_top3 after runtime patches are installed. Point
-    # that legacy dashboard selector at the research lane so the existing
-    # "Execution Research Top 3" tab is populated again.
-    top3_dashboard.select_top3 = select_research_top3
+    # Patch both module namespaces used by the app and legacy dashboard. Do not
+    # depend on top3_lane_patch's rank-contract reconstruction for this research
+    # display path; the research tab must remain populated from persisted radar.
+    for owner in (top3_dashboard, top3_dashboard_legacy):
+        setattr(owner, "select_research_top3", select_research_top3)
+        setattr(owner, "select_top3", select_research_top3)
+
     return {
+        "patch_version": PATCH_VERSION,
         "research_display_lane": "RAW_RESEARCH_TOP3",
         "guarded_lane": "GUARDED_DECISION_TOP3",
         "execution_lane": "EXECUTION_TOP3_MANUAL_OR_DIRECT",
+        "policy": "RESEARCH_DISPLAY_CANNOT_BE_EMPTIED_BY_REAL_MONEY_GATE",
     }
 
 
-__all__ = ["install"]
+__all__ = ["PATCH_VERSION", "select_research_top3", "install"]
