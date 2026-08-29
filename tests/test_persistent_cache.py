@@ -88,7 +88,7 @@ def test_stale_ohlcv_provider_failure_uses_cache(monkeypatch):
 def test_fundamental_cache_hit_avoids_provider(monkeypatch):
     row = pc.build_source_cache_row(
         "ELSA.JK", "FUNDAMENTAL", {
-            "ticker": "ELSA.JK", "fundamental_cache_schema_version": "4", "fundamental_coverage_pct": 70.0,
+            "ticker": "ELSA.JK", "fundamental_cache_schema_version": "5", "fundamental_coverage_pct": 70.0,
             "revenue_growth_qoq_pct": 5.0, "revenue_growth_yoy_pct": 9.0,
             "earnings_growth_qoq_pct": 8.0, "earnings_growth_yoy_pct": 29.0,
             "roe_ttm_pct": 12.0, "roa_ttm_pct": 7.0,
@@ -98,6 +98,8 @@ def test_fundamental_cache_hit_avoids_provider(monkeypatch):
                 "fundamental_data_quality_score": 80.0, "fundamental_score_cap": 88.0,
                 "fundamental_growth_consistency_state": "QUARTER_AND_YTD_CONFIRMED", "fundamental_growth_consistency_score": 100.0,
                 "revenue_growth_ytd_yoy_pct": 9.0, "earnings_growth_ytd_yoy_pct": 29.0,
+                "fundamental_observed_at": "2026-08-05T09:00:00Z",
+                "fundamental_availability_state": "POINT_IN_TIME_OBSERVED_AT_FETCH",
         },
         provider="YFINANCE", status="OK", checked_at="2026-08-05T10:00:00Z", ttl_hours=168,
     )
