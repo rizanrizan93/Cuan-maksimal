@@ -13,7 +13,10 @@ def _profile(*, verified_story: bool = False, strong_public_story: bool = True, 
         "trend_score": 86, "liquidity_score": liquidity, "distribution_score": 8,
         "crowding_score": 28, "execution_friction_score": 6, "price_stage": "BASE_TRANSITION",
         "absorption_score": 78, "last_price": 1100, "ema20": 1040, "high20": 1140,
-        "low20": 950, "atr14": 44, "adtv20_idr": 19_000_000_000,
+        "low20": 950, "atr14": 44,
+        "previous_high20": 1260, "prior_high20": 1280,
+        "prior_high55": 1360, "prior_high120": 1480, "prior_high252": 1620,
+        "adtv20_idr": 19_000_000_000,
         "gap_risk_score": 0, "ohlcv_integrity_state": "VALID", "corporate_action_anomaly_flag": False,
     }
     narrative = {
