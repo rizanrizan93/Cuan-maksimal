@@ -30,8 +30,19 @@ jobs:
           import pandas as pd
           import requests
 
-          url = 'https://raw.githubusercontent.com/rizanrizan93/idx-flow-scanner/main/data/cache/idx_public_participant_30d.csv.gz'
-          r = requests.get(url, timeout=20, headers={'User-Agent':'Emir-Canonical-Participant-Verify/1.0'})
+          cache_url = 'https://raw.githubusercontent.com/rizanrizan93/idx-flow-scanner/main/data/cache/idx_public_participant_30d.csv.gz'
+          meta_url = 'https://raw.githubusercontent.com/rizanrizan93/idx-flow-scanner/main/data/cache/public_participant_meta.json'
+          headers = {'User-Agent':'Emir-Canonical-Participant-Verify/1.1'}
+          r = requests.get(cache_url, timeout=20, headers=headers)
+          if r.status_code == 404:
+              meta_response = requests.get(meta_url, timeout=20, headers=headers)
+              meta_response.raise_for_status()
+              meta = meta_response.json()
+              state = str(meta.get('status') or '').upper()
+              if state in {'NO_DATA', 'BLOCKED', 'SOURCE_UNAVAILABLE'} and int(meta.get('cache_rows') or 0) == 0:
+                  print({'participant_cache_state':'SOURCE_UNAVAILABLE_FAIL_CLOSED', **meta})
+                  raise SystemExit(0)
+              raise SystemExit(f'CANONICAL_CACHE_404_WITH_UNEXPECTED_META:{meta}')
           r.raise_for_status()
           df = pd.read_csv(BytesIO(gzip.decompress(r.content)))
           required = {'ticker','trade_date','participant','buy_value','sell_value','buy_volume','sell_volume','participant_flow_source'}
