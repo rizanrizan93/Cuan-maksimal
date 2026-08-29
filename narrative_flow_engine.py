@@ -1742,6 +1742,7 @@ def build_execution_plan(
     atr = _finite(features.get("atr14"), np.nan)
     ema20 = _finite(features.get("ema20"), np.nan)
     high20 = _finite(features.get("high20"), np.nan)
+    high55 = _finite(features.get("high55"), high20)
     low20 = _finite(features.get("low20"), np.nan)
     if not all(np.isfinite(value) for value in (close, atr, ema20, high20, low20)) or atr <= 0:
         return {
@@ -1770,6 +1771,29 @@ def build_execution_plan(
             return np.nan
         return (target - entry) / entry_risk
 
+    range_height = max(high20 - low20, atr)
+
+    def _structural_targets(entry_floor: float, anchors: list[float]) -> tuple[float, float]:
+        """Targets come from observed resistance/range geometry, never from desired R."""
+        values: list[float] = []
+        for raw in anchors:
+            if not np.isfinite(raw) or raw <= entry_floor:
+                continue
+            rounded = round_idx(raw, "up")
+            if np.isfinite(rounded) and rounded > entry_floor and rounded not in values:
+                values.append(float(rounded))
+        values.sort()
+        if not values:
+            return np.nan, np.nan
+        tp_first = values[0]
+        if len(values) >= 2:
+            tp_second = values[1]
+        else:
+            tp_second = round_idx(tp_first + max(0.50 * range_height, atr), "up")
+        if not np.isfinite(tp_second) or tp_second <= tp_first:
+            tp_second = round_idx(tp_first + max(range_height, atr), "up")
+        return float(tp_first), float(tp_second)
+
     # Plan A — accumulation/pullback. The breakout trigger is NOT part of this geometry.
     entry_mid = (entry_low + entry_high) / 2
     structure_stop = round_idx(min(low20, entry_low - 1.10 * atr), "down")
@@ -1785,8 +1809,10 @@ def build_execution_plan(
             "execution_geometry_state": "ACCUMULATION_RISK_NON_POSITIVE",
             "preferred_execution_path": "NONE",
         }
-    tp1 = round_idx(entry_mid + 1.8 * risk, "up")
-    tp2 = round_idx(entry_mid + 3.0 * risk, "up")
+    tp1, tp2 = _structural_targets(
+        entry_high,
+        [high20, high55, trigger + 0.50 * range_height, trigger + range_height],
+    )
     accumulation_valid = bool(stop < entry_low <= entry_high < tp1 < tp2)
     if not accumulation_valid:
         return {
@@ -1812,8 +1838,10 @@ def build_execution_plan(
     if breakout_stop >= breakout_entry:
         breakout_stop = round_idx(breakout_entry - tick, "down")
     breakout_risk = breakout_entry - breakout_stop
-    breakout_tp1 = round_idx(breakout_entry + 1.8 * breakout_risk, "up")
-    breakout_tp2 = round_idx(breakout_entry + 3.0 * breakout_risk, "up")
+    breakout_tp1, breakout_tp2 = _structural_targets(
+        breakout_entry,
+        [high55, breakout_entry + 0.50 * range_height, breakout_entry + range_height],
+    )
     breakout_valid = bool(breakout_risk > 0 and breakout_stop < breakout_entry < breakout_tp1 < breakout_tp2)
 
     accum_rr1 = _rr(entry_high, tp1, stop)
@@ -1933,7 +1961,8 @@ def build_execution_plan(
         "execution_min_rr_pass": bool(selected_min_rr_pass),
         "execution_geometry_state": "VALID_SELECTED_PATH" if selected_geometry_valid else "NO_VALID_SELECTED_PATH",
         "hard_stop_distance_pct": round(stop_distance_pct, 2),
-        "risk_doctrine_state": "SEPARATE_ACCUMULATION_VS_BREAKOUT_RISK_GEOMETRY_V2",
+        "risk_doctrine_state": "SEPARATE_ACCUMULATION_VS_BREAKOUT_RISK_GEOMETRY_V3",
+        "execution_target_basis": "STRUCTURAL_RESISTANCE_OR_RANGE_MEASURED_MOVE_V1",
         "trigger_provenance": "DIRECT_BID_OFFER_EVIDENCE" if orderbook_verified else "OHLCV_EOD_MICROSTRUCTURE_PROXY" if auto_eod_ready else "OHLCV_STRUCTURE_PROXY_WAIT_DIRECT_BID_OFFER",
     }
 
