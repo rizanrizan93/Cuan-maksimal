@@ -96,10 +96,10 @@ def test_next_leader_penalizes_unconfirmed_inflection_and_lagging_period():
     assert both["next_leader_score"] < lagging["next_leader_score"]
 
 
-def test_schema_v4_rejects_old_v3_payload_without_ytd_contract():
+def test_schema_v5_rejects_old_v4_payload_without_pit_contract():
     import persistent_cache as pc
     payload = {
-        "fundamental_cache_schema_version": "3",
+        "fundamental_cache_schema_version": "4",
         "revenue_growth_qoq_pct": 1.0, "revenue_growth_yoy_pct": 10.0,
         "earnings_growth_qoq_pct": 1.0, "earnings_growth_yoy_pct": 10.0,
         "roe_ttm_pct": 10.0, "roa_ttm_pct": 5.0,
