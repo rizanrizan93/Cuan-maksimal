@@ -22,6 +22,8 @@ def _base_context():
         "fundamental_conversion_score": 75.0,
         "fundamental_growth_consistency_state": "QUARTER_AND_YTD_CONFIRMED",
         "fundamental_period_freshness_state": "CURRENT",
+        "fundamental_observed_at": "2026-01-01T00:00:00Z",
+        "fundamental_availability_state": "POINT_IN_TIME_OBSERVED",
     }
     ownership = {"ownership_score": 60.0, "ownership_coverage_pct": 35.0}
     sector = {"sector_leadership_score": 65.0, "sector_context_coverage_pct": 90.0}
@@ -280,3 +282,20 @@ def test_future_fundamental_excludes_post_asof_events():
     assert out["future_verified_forward_event_count"] == 0
     assert out["future_official_forward_event_count"] == 0
     assert np.isnan(out["future_direct_forward_visibility_score"])
+
+
+def test_future_fundamental_excludes_snapshot_observed_after_decision_time():
+    narrative, fundamental, ownership, sector = _base_context()
+    fundamental["fundamental_observed_at"] = "2026-09-01T00:00:00Z"
+    out = calculate_future_fundamental(
+        ticker="MARK.JK",
+        events=pd.DataFrame(),
+        narrative=narrative,
+        fundamental=fundamental,
+        ownership=ownership,
+        sector=sector,
+        as_of="2026-08-14T00:00:00Z",
+    )
+    assert out["future_fundamental_input_availability_state"] == "FUTURE_FUNDAMENTAL_SNAPSHOT_EXCLUDED"
+    assert np.isnan(out["future_funding_capacity_score"])
+    assert np.isnan(out["future_business_confirmation_score"])
