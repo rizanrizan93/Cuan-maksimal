@@ -105,7 +105,7 @@ def _profile_inputs(direct: bool):
     features={
         "feature_state":"OK","smart_money_score":82,"smart_money_coverage_pct":100,"market_structure_score":82,"market_structure_mode":"CONTINUATION_SETUP",
         "trend_score":84,"liquidity_score":80,"distribution_score":5,"crowding_score":28,"execution_friction_score":8,"price_stage":"BASE_TRANSITION",
-        "absorption_score":80,"last_price":1000,"ema20":970,"high20":1020,"low20":930,"atr14":30,"adtv20_idr":1_000_000_000,"gap_risk_score":0,
+        "absorption_score":80,"last_price":1000,"ema20":970,"high20":1020,"low20":930,"atr14":30,"previous_high20":1140,"prior_high20":1160,"prior_high55":1240,"prior_high120":1320,"prior_high252":1450,"adtv20_idr":1_000_000_000,"gap_risk_score":0,
         "ohlcv_integrity_state":"VALID","corporate_action_anomaly_flag":False,
     }
     narrative={"narrative_score":78,"narrative_coverage_pct":90,"narrative_state":"MATERIAL_THESIS_CONFIRMED","narrative_verified_source_count":1,"narrative_independent_story_count":2,"financial_conversion_score":75,"issuer_alignment_score":80,"issuer_alignment_coverage_pct":90,"story_runway_score":80,"top_down_catalyst_score":75,"industry_translation_score":75,"retail_adoption_stage":"PRE_RETAIL"}
