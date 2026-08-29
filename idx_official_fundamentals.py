@@ -394,6 +394,10 @@ def fetch_idx_official_fundamental(
                     response.raise_for_status()
                     xml_bytes = _extract_instance_bytes(response.content)
                     snapshot = parse_idx_xbrl_instance(symbol, xml_bytes, source_url=url, period_label=period)
+                    observed = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
+                    observed = observed.tz_localize("UTC") if observed.tzinfo is None else observed.tz_convert("UTC")
+                    snapshot["idx_official_observed_at"] = observed.isoformat()
+                    snapshot["idx_official_availability_state"] = "POINT_IN_TIME_OBSERVED_AT_FETCH"
                     coverage = _finite(snapshot.get("idx_official_coverage_pct"), 0)
                     status = "OK" if coverage >= 50 else "PARTIAL"
                     return snapshot, {
