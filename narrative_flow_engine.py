@@ -2435,10 +2435,22 @@ def build_emir_profile(
     real_money_entry_candidate = bool(real_money_candidate and execution_geometry_valid and execution_min_rr_pass and state in actionable_real_money_states)
     # Scanner-side READY remains strict. Proxy-only / missing-cashflow / public-news evidence
     # may become a manual candidate, but can never self-authorize capital.
+    fundamental_availability_state = str(
+        fundamental.get("fundamental_availability_state") or ""
+    ).upper()
+    fundamental_observed_at = str(fundamental.get("fundamental_observed_at") or "")
+    fundamental_point_in_time_ready = bool(
+        fundamental_observed_at
+        and fundamental_availability_state in {
+            "POINT_IN_TIME_OBSERVED",
+            "POINT_IN_TIME_OBSERVED_AT_FETCH",
+        }
+    )
     direct_fundamental_ready = (
         official_cov >= 50
         and not cashflow_missing
         and cashflow_quality_state not in {"OCF_NEGATIVE", "OCF_AND_FCF_NEGATIVE"}
+        and fundamental_point_in_time_ready
     )
     direct_story_ready = manual_verified_story
     # DIRECT_VERIFIED_READY means *all* scanner-observed conditions are resolved.
@@ -2530,6 +2542,8 @@ def build_emir_profile(
         "market_allows_thesis": market_allows_thesis,
         "capital_mode": capital_mode_state,
         "fundamental_cashflow_quality_state": cashflow_quality_state,
+        "fundamental_point_in_time_ready": fundamental_point_in_time_ready,
+        "fundamental_availability_state": fundamental_availability_state or "AVAILABILITY_TIMESTAMP_UNVERIFIED",
         "real_money_gate_state": real_money_gate_state,
         "real_money_candidate": real_money_candidate,
         "real_money_entry_candidate": real_money_entry_candidate,
