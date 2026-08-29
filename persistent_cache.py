@@ -88,7 +88,7 @@ def _canonical(value: Any) -> Any:
 
 
 
-_FUNDAMENTAL_REQUIRED_KEYS = {
+_FUNDAMENTAL_REQUIRED_KEYS_V4 = {
     "revenue_growth_qoq_pct", "revenue_growth_yoy_pct",
     "earnings_growth_qoq_pct", "earnings_growth_yoy_pct",
     "roe_ttm_pct", "roa_ttm_pct",
@@ -98,14 +98,26 @@ _FUNDAMENTAL_REQUIRED_KEYS = {
     "fundamental_data_quality_score", "fundamental_score_cap",
     "fundamental_growth_consistency_state", "fundamental_growth_consistency_score",
     "revenue_growth_ytd_yoy_pct", "earnings_growth_ytd_yoy_pct",
+}
+_FUNDAMENTAL_REQUIRED_KEYS_V5 = _FUNDAMENTAL_REQUIRED_KEYS_V4 | {
     "fundamental_observed_at", "fundamental_availability_state",
 }
 
 def _fundamental_payload_compatible(payload: Any) -> bool:
+    """Accept v4 only as a legacy research/cache accelerator.
+
+    v4 predates point-in-time availability lineage.  It remains readable so a
+    provider outage does not erase durable research memory, but recalibration
+    marks it availability-unverified and Direct Ready remains fail-closed.
+    """
     if not isinstance(payload, Mapping) or not payload:
         return False
     version = str(payload.get("fundamental_cache_schema_version") or "")
-    return version == FUNDAMENTAL_CACHE_SCHEMA_VERSION and _FUNDAMENTAL_REQUIRED_KEYS.issubset(payload.keys())
+    if version == "4":
+        return _FUNDAMENTAL_REQUIRED_KEYS_V4.issubset(payload.keys())
+    if version == FUNDAMENTAL_CACHE_SCHEMA_VERSION:
+        return _FUNDAMENTAL_REQUIRED_KEYS_V5.issubset(payload.keys())
+    return False
 
 
 def _expected_quarter_end(now: Any = None) -> pd.Timestamp | pd.NaT:
