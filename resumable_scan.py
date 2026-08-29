@@ -132,6 +132,28 @@ def _frame(records: Any) -> pd.DataFrame:
     return pd.DataFrame(records if isinstance(records, list) else [])
 
 
+def _point_in_time_event_frame(events: pd.DataFrame | None, *, as_of: Any) -> tuple[pd.DataFrame, int]:
+    """Fail closed on event availability before any downstream narrative/forward scorer."""
+    if not isinstance(events, pd.DataFrame) or events.empty:
+        return pd.DataFrame(), 0
+    local = events.copy()
+    now = pd.Timestamp(as_of)
+    now = now.tz_localize("UTC") if now.tzinfo is None else now.tz_convert("UTC")
+    published = pd.to_datetime(
+        local.get("published_at", pd.Series(pd.NaT, index=local.index)),
+        errors="coerce", utc=True,
+    )
+    if "event_date" in local.columns:
+        fallback = pd.to_datetime(local["event_date"], errors="coerce", utc=True)
+        published = published.fillna(fallback)
+    eligible = published.notna() & published.le(now)
+    excluded = int((~eligible).sum())
+    local = local.loc[eligible].copy()
+    local["published_at"] = published.loc[eligible]
+    local["point_in_time_state"] = "AVAILABLE_AS_OF_DECISION"
+    return local.reset_index(drop=True), excluded
+
+
 def _checkpoint_audit_records(frame: pd.DataFrame | None, limit: int = 25) -> list[dict[str, Any]]:
     """Persist a compact checkpoint audit instead of entire wide provider payloads."""
     if not isinstance(frame, pd.DataFrame) or frame.empty:
@@ -1030,8 +1052,10 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
     official_events_frame=pd.DataFrame(official_events)
     event_frames = [frame for frame in (persisted_forward_events, manual_events, online_events, ksei_events, official_events_frame, persisted_narrative_events) if isinstance(frame, pd.DataFrame) and not frame.empty]
     all_events = pd.concat(event_frames, ignore_index=True, sort=False) if event_frames else pd.DataFrame()
+    point_in_time_excluded_event_rows = 0
     if not all_events.empty:
         all_events["ticker"] = all_events["ticker"].map(normalize_ticker)
+        all_events, point_in_time_excluded_event_rows = _point_in_time_event_frame(all_events, as_of=now)
         dedupe = [column for column in ("ticker", "title", "url") if column in all_events.columns]
         if dedupe:
             all_events = all_events.drop_duplicates(dedupe, keep="first")
@@ -1239,6 +1263,7 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
             "research_memory_rows": len(research_memory_rows),
             "research_memory_verified_exact": memory_verified_exact,
             "official_fundamental_verified": int(official_fundamental_frame.get("idx_official_source_verified", pd.Series(dtype=bool)).fillna(False).sum()) if not official_fundamental_frame.empty else 0,
+            "point_in_time_excluded_event_rows": int(point_in_time_excluded_event_rows),
             "radar_persisted": radar_persisted,
         },
         "last_error": (
