@@ -258,3 +258,25 @@ def test_extreme_low_verified_free_float_hard_blocks_without_inventing_other_reg
     assert out["idx_integrity_hard_block"] is True
     assert "EXTREME_LOW_FREE_FLOAT" in out["idx_integrity_block_reasons"]
     assert out["hsc_verification_state"] == "UNKNOWN_NOT_VERIFIED"
+
+
+def test_future_fundamental_excludes_post_asof_events():
+    narrative, fundamental, ownership, sector = _base_context()
+    events = pd.DataFrame([{
+        "ticker": "MARK.JK",
+        "published_at": "2026-09-01T00:00:00Z",
+        "title": "MARK signs major customer contract and expands capacity",
+        "summary": "Contract backlog and capacity expansion support future revenue.",
+        "category": "CAPACITY_AND_BACKLOG",
+        "source_verified": True,
+        "source_tier": "ISSUER",
+    }])
+    out = calculate_future_fundamental(
+        ticker="MARK.JK", events=events, narrative=narrative,
+        fundamental=fundamental, ownership=ownership, sector=sector,
+        as_of="2026-08-14T00:00:00Z",
+    )
+    assert out["future_forward_event_count"] == 0
+    assert out["future_verified_forward_event_count"] == 0
+    assert out["future_official_forward_event_count"] == 0
+    assert np.isnan(out["future_direct_forward_visibility_score"])
