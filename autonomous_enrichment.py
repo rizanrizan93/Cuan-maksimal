@@ -1126,7 +1126,14 @@ def recalibrate_cached_fundamental_snapshot(payload: Mapping[str, Any] | None) -
         else "FUTURE_FUNDAMENTAL_SUPPORTIVE" if score >= 68 and critical_completeness >= 62.5
         else "FUNDAMENTAL_MIXED" if score >= 48 else "FUNDAMENTAL_WEAK"
     )
-    result["fundamental_cache_schema_version"] = "4"
+    observed_at = str(result.get("fundamental_observed_at") or "").strip()
+    availability_state = str(result.get("fundamental_availability_state") or "").strip().upper()
+    if not observed_at:
+        result["fundamental_observed_at"] = ""
+        result["fundamental_availability_state"] = "AVAILABILITY_TIMESTAMP_UNVERIFIED_LEGACY_CACHE"
+    elif not availability_state:
+        result["fundamental_availability_state"] = "POINT_IN_TIME_OBSERVED"
+    result["fundamental_cache_schema_version"] = "5"
     result["fundamental_database_enrichment_state"] = "DATABASE_FIRST_FIELD_LEVEL_RECONCILIATION"
     return result
 
@@ -1550,7 +1557,10 @@ def reconcile_fundamental_snapshot(proxy: Mapping[str, Any] | None, official: Ma
     result["fundamental_cross_source_state"]=cross_state
     result["fundamental_official_source_url"]=off.get("idx_official_source_url")
     result["fundamental_provenance_state"]="IDX_OFFICIAL_XBRL_PRIMARY_WITH_PUBLIC_PROXY_CROSSCHECK"
-    result["fundamental_cache_schema_version"]="4"
+    if not str(result.get("fundamental_observed_at") or "").strip():
+        result["fundamental_observed_at"] = ""
+        result["fundamental_availability_state"] = "AVAILABILITY_TIMESTAMP_UNVERIFIED_LEGACY_CACHE"
+    result["fundamental_cache_schema_version"]="5"
     if not np.isfinite(score) or _finite(result.get("fundamental_coverage_pct"),0)<45: state="FUNDAMENTAL_INCOMPLETE"
     elif score>=68: state="FUTURE_FUNDAMENTAL_SUPPORTIVE"
     elif score>=48: state="FUNDAMENTAL_MIXED"
