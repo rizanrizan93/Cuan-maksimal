@@ -19,6 +19,7 @@ from narrative_flow_engine import (  # noqa: E402
     PUBLIC_FORMULA_REGISTRY,
     aggregate_broker_summary,
     build_emir_profile,
+    build_execution_plan,
     calculate_market_context,
     calculate_market_features,
     calculate_sector_context,
@@ -697,3 +698,68 @@ def test_direct_ready_requires_point_in_time_fundamental_lineage():
     assert unverified["fundamental_point_in_time_ready"] is False
     assert unverified["real_money_ready"] is False
     assert unverified["entry_authorization_state"] != "SCANNER_AUTHORIZED_DIRECT_VERIFIED"
+
+
+def test_execution_targets_use_observed_prior_resistance_when_available():
+    features = {
+        "last_price": 100.0, "atr14": 2.0, "ema20": 98.0,
+        "high20": 102.0, "low20": 95.0,
+        "previous_high20": 108.0, "prior_high20": 110.0,
+        "prior_high55": 120.0, "prior_high120": 130.0, "prior_high252": 140.0,
+    }
+    plan = build_execution_plan(features, ready=False, lifecycle="INVENTORY_COLLECTION")
+    assert plan["preferred_execution_path"] == "ACCUMULATION_PULLBACK"
+    assert plan["execution_targets_structural"] is True
+    assert plan["execution_target_basis"] == "OBSERVED_PRIOR_RESISTANCE"
+    assert plan["execution_tp1"] in plan["observed_resistance_candidates"]
+    assert plan["execution_tp2"] in plan["observed_resistance_candidates"]
+
+
+def test_synthetic_r_targets_are_research_only_and_block_real_money_candidate():
+    features, narrative, broker, ownership, market, sector, integrity = strong_inputs()
+    for key in ("previous_high20", "prior_high20", "prior_high55", "prior_high120", "prior_high252"):
+        features[key] = np.nan
+    profile = build_emir_profile(
+        ticker="TEST", features=features, narrative=narrative, broker=broker, ownership=ownership,
+        market=market, sector=sector, integrity=integrity, fundamental=strong_fundamental(), deep_reviewed=True,
+    )
+    assert profile["execution_targets_structural"] is False
+    assert profile["execution_target_basis"] == "R_MULTIPLE_FALLBACK_RESEARCH_ONLY"
+    assert "EXECUTION_TARGETS_NOT_STRUCTURAL" in profile["real_money_block_reasons"]
+    assert profile["real_money_candidate"] is False
+
+
+def test_ohlcv_distribution_is_gate_not_duplicate_conviction_penalty():
+    features, narrative, broker, ownership, market, sector, integrity = strong_inputs()
+    low = dict(features)
+    high = dict(features)
+    low["distribution_score"] = 5.0
+    high["distribution_score"] = 80.0
+    p1 = build_emir_profile(
+        ticker="TEST", features=low, narrative=narrative, broker=broker, ownership=ownership,
+        market=market, sector=sector, integrity=integrity, fundamental=strong_fundamental(), deep_reviewed=True,
+    )
+    p2 = build_emir_profile(
+        ticker="TEST", features=high, narrative=narrative, broker=broker, ownership=ownership,
+        market=market, sector=sector, integrity=integrity, fundamental=strong_fundamental(), deep_reviewed=True,
+    )
+    assert p1["emir_conviction_score"] == p2["emir_conviction_score"]
+    assert p2["emir_distribution_penalty_basis"] == "OHLCV_DISTRIBUTION_GATE_ONLY_NOT_SCORE_PENALTY"
+    assert "DISTRIBUTION_GE_40" in p2["real_money_block_reasons"]
+
+
+def test_outcome_calibration_cannot_drive_guarded_decision_without_point_in_time_universe():
+    frame = pd.DataFrame({
+        "emir_lifecycle": ["EARLY_CONVERGENCE"] * 35,
+        "market_structure_mode": ["CONTINUATION_SETUP"] * 35,
+        "return_pct": [5.0] * 35,
+        "max_drawdown_pct": [-4.0] * 35,
+        "outcome_verified": [True] * 35,
+    })
+    calibration = build_outcome_calibration(frame)
+    assert calibration["GLOBAL"]["outcome_calibration_state"] == "SURVIVORSHIP_BIAS_UNCONTROLLED_SHADOW_ONLY"
+    assert calibration["GLOBAL"]["outcome_universe_pit_verified_pct"] == 0.0
+
+    frame["universe_point_in_time_verified"] = True
+    controlled = build_outcome_calibration(frame)
+    assert controlled["GLOBAL"]["outcome_calibration_state"] == "EMPIRICAL_EDGE_SUPPORTED"

@@ -137,3 +137,11 @@ Official IDX XBRL is a confidence upgrade, not a prerequisite for scoring. Curre
   functions are no longer executable by API roles.
 - v1.9.6 scoring weights, v1.9.7 universe metadata, and schema-v8 table contracts
   remain unchanged.
+
+
+## v1.9.28 audit integrity hardening
+
+- Executable TP1/TP2 prefer observed prior resistance. Fixed-R targets are retained only as research fallback and cannot authorize real-money execution.
+- OHLCV distribution remains a safety/eligibility gate but is no longer subtracted a second time from conviction; only sufficiently covered broker distribution can add an independent distribution penalty.
+- Outcome calibration cannot drive GUARDED rejection/support unless point-in-time universe membership is explicitly verified.
+- Optional runtime-patch failures are surfaced through structured status and warnings instead of silent exception swallowing.

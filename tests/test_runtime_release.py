@@ -57,3 +57,17 @@ def test_stale_loaded_modules_are_reloaded_in_dependency_order(monkeypatch):
         "resumable_scan",
     ]
     assert reloaded == tuple(calls)
+
+def test_optional_patch_failure_is_observable(monkeypatch):
+    runtime_release._LAST_PATCH_STATUS.clear()
+
+    def broken_import(name):
+        raise RuntimeError("provider patch unavailable")
+
+    monkeypatch.setattr(runtime_release.importlib, "import_module", broken_import)
+    with __import__("pytest").warns(RuntimeWarning, match="Optional runtime patch"):
+        runtime_release._try_optional_patch("optional_patch", "install")
+
+    status = runtime_release.runtime_patch_status()
+    assert status["optional_patch.install"]["state"] == "FAILED"
+    assert "RuntimeError" in status["optional_patch.install"]["detail"]
