@@ -168,9 +168,20 @@ def parse_universe_frame(uploaded: Any) -> pd.DataFrame:
         "rank_universe": "universe_rank", "rank": "universe_rank",
         "role": "universe_role", "scan_priority": "priority",
     }
+    missing_metadata_tokens = {"", "UNKNOWN", "UNKNOWN_SECTOR", "N/A", "NA", "NAN", "NONE", "NULL"}
     for source, target in aliases.items():
-        if source in local.columns and target not in local.columns:
+        if source not in local.columns:
+            continue
+        if target not in local.columns:
             local[target] = local[source]
+            continue
+        # An explicit IDX-IC alias is more informative than a placeholder target.
+        # Never let "UNKNOWN" in a generic sector column mask sector_idx_ic.
+        target_text = local[target].fillna("").astype(str).str.strip()
+        source_text = local[source].fillna("").astype(str).str.strip()
+        target_missing = target_text.str.upper().isin(missing_metadata_tokens)
+        source_present = ~source_text.str.upper().isin(missing_metadata_tokens)
+        local.loc[target_missing & source_present, target] = source_text[target_missing & source_present]
     for column in UNIVERSE_METADATA_COLUMNS:
         if column == "ticker":
             continue
