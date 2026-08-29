@@ -257,6 +257,17 @@ def calculate_future_fundamental(
     fundamental = dict(fundamental or {})
     ownership = dict(ownership or {})
     sector = dict(sector or {})
+
+    decision_time = pd.Timestamp.now(tz="UTC") if as_of is None else pd.Timestamp(as_of)
+    decision_time = decision_time.tz_localize("UTC") if decision_time.tzinfo is None else decision_time.tz_convert("UTC")
+    fundamental_observed = pd.to_datetime(fundamental.get("fundamental_observed_at"), errors="coerce", utc=True)
+    if pd.notna(fundamental_observed) and fundamental_observed > decision_time:
+        fundamental = {}
+        fundamental_availability_state = "FUTURE_FUNDAMENTAL_SNAPSHOT_EXCLUDED"
+    elif pd.notna(fundamental_observed):
+        fundamental_availability_state = "AVAILABLE_AS_OF"
+    else:
+        fundamental_availability_state = "AVAILABILITY_TIMESTAMP_UNVERIFIED"
     project = _event_bucket(events, PROJECT_TERMS + CAPEX_TERMS, as_of=as_of)
     contracts = _event_bucket(events, CONTRACT_TERMS + GUIDANCE_TERMS, as_of=as_of)
     alignment_events = _event_bucket(events, ALIGNMENT_TERMS, as_of=as_of)
@@ -383,6 +394,8 @@ def calculate_future_fundamental(
         "future_fundamental_horizon_state": horizon,
         "future_fundamental_drivers": " | ".join(drivers) or "NO_FORWARD_DRIVER_CONFIRMED",
         "future_fundamental_risk_flags": " | ".join(dict.fromkeys(flags)) or "NO_MAJOR_FORWARD_FUNDAMENTAL_RISK",
+        "future_fundamental_input_availability_state": fundamental_availability_state,
+        "future_fundamental_input_observed_at": fundamental_observed.isoformat() if pd.notna(fundamental_observed) else "",
     }
 
 
