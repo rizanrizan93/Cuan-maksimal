@@ -29,7 +29,7 @@ from research_memory import load_latest_research_memory
 from narrative_flow_engine import MARKET_FEATURE_VERSION
 
 CACHE_VERSION = "1.9.14"
-FUNDAMENTAL_CACHE_SCHEMA_VERSION = "4"
+FUNDAMENTAL_CACHE_SCHEMA_VERSION = "5"
 OHLCV_CACHE_TTL_HOURS = 12.0
 KSEI_CACHE_TTL_HOURS = 24.0
 FUNDAMENTAL_CACHE_TTL_HOURS = 24.0 * 7
@@ -98,6 +98,7 @@ _FUNDAMENTAL_REQUIRED_KEYS = {
     "fundamental_data_quality_score", "fundamental_score_cap",
     "fundamental_growth_consistency_state", "fundamental_growth_consistency_score",
     "revenue_growth_ytd_yoy_pct", "earnings_growth_ytd_yoy_pct",
+    "fundamental_observed_at", "fundamental_availability_state",
 }
 
 def _fundamental_payload_compatible(payload: Any) -> bool:
