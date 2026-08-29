@@ -104,7 +104,7 @@ def install() -> dict[str, str]:
         "patch_version": PATCH_VERSION,
         "research_display_lane": "RAW_RESEARCH_TOP3",
         "guarded_lane": "GUARDED_DECISION_TOP3",
-        "execution_lane": "EXECUTION_TOP3_MANUAL_OR_DIRECT",
+        "execution_lane": "EXECUTION_TOP3_AUTHORIZED_DIRECT",
         "policy": "RESEARCH_DISPLAY_CANNOT_BE_EMPTIED_BY_REAL_MONEY_GATE",
         "fallback_policy": "RESEARCH_RANK_EMPTY_FALLS_BACK_TO_EMIR_SCORE",
     }

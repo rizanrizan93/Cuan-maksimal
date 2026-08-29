@@ -21,6 +21,7 @@ def _frame() -> pd.DataFrame:
             "real_money_hard_block_count": 1,
             "real_money_authorization_tier": "HARD_BLOCKED",
             "real_money_gate_class": "HARD_BLOCK",
+            "emir_decision_state": "EMIR_DATA_INTEGRITY_BLOCK",
             "emir_evidence_coverage_pct": 95.0,
             "real_money_rr_score": 70.0,
         },
@@ -35,6 +36,7 @@ def _frame() -> pd.DataFrame:
             "real_money_hard_block_count": 1,
             "real_money_authorization_tier": "HARD_BLOCKED",
             "real_money_gate_class": "HARD_BLOCK",
+            "emir_decision_state": "EMIR_REJECT_IDX_INTEGRITY",
             "emir_evidence_coverage_pct": 90.0,
             "real_money_rr_score": 65.0,
         },
@@ -49,6 +51,7 @@ def _frame() -> pd.DataFrame:
             "real_money_hard_block_count": 0,
             "real_money_authorization_tier": "WAIT_TIMING",
             "real_money_gate_class": "WAIT_TIMING",
+            "emir_decision_state": "EMIR_WAIT_REACCUMULATION",
             "emir_evidence_coverage_pct": 92.0,
             "real_money_rr_score": 75.0,
         },
@@ -63,6 +66,7 @@ def _frame() -> pd.DataFrame:
             "real_money_hard_block_count": 0,
             "real_money_authorization_tier": "WAIT_TIMING",
             "real_money_gate_class": "WAIT_TIMING",
+            "emir_decision_state": "EMIR_WAIT_NARRATIVE",
             "emir_evidence_coverage_pct": 91.0,
             "real_money_rr_score": 72.0,
         },
@@ -77,6 +81,7 @@ def _frame() -> pd.DataFrame:
             "real_money_hard_block_count": 0,
             "real_money_authorization_tier": "WAIT_TIMING",
             "real_money_gate_class": "WAIT_TIMING",
+            "emir_decision_state": "EMIR_WAIT_MONEY_FLOW",
             "emir_evidence_coverage_pct": 90.0,
             "real_money_rr_score": 70.0,
         },
@@ -87,11 +92,22 @@ def _frame() -> pd.DataFrame:
             "real_money_candidate_score": 79.0,
             "real_money_candidate": True,
             "real_money_entry_candidate": True,
-            "real_money_ready": False,
+            "real_money_ready": True,
             "real_money_hard_block_count": 0,
-            "real_money_authorization_tier": "PROXY_EXECUTION_ELIGIBLE_MANUAL_CONFIRMATION",
-            "real_money_gate_class": "MANUAL_CONFIRMATION",
-            "real_money_gate_state": "REAL_MONEY_MANUAL_CONFIRMATION_REQUIRED",
+            "real_money_authorization_tier": "DIRECT_VERIFIED_READY",
+            "real_money_gate_class": "DIRECT_VERIFIED_READY",
+            "real_money_gate_state": "REAL_MONEY_DIRECT_VERIFIED_READY",
+            "entry_authorization_state": "SCANNER_AUTHORIZED_DIRECT_VERIFIED",
+            "real_money_block_reasons": "NONE",
+            "emir_decision_state": "EMIR_READY_WITH_PRECISE_TRIGGER",
+            "execution_geometry_valid": True,
+            "execution_entry_reference": 100.0,
+            "execution_stop_loss": 90.0,
+            "execution_tp1": 116.0,
+            "execution_tp2": 125.0,
+            "preferred_execution_path": "ACCUMULATION_PULLBACK",
+            "execution_rr_tp1": 1.6,
+            "execution_min_rr_pass": True,
             "emir_evidence_coverage_pct": 91.0,
             "real_money_rr_score": 62.0,
         },
@@ -121,7 +137,7 @@ def test_production_watch_separates_wait_timing_from_execution():
 def test_execution_lane_returns_only_omed_and_never_backfills_hard_block_or_wait():
     out = select_execution_top3(_frame(), 3)
     assert out["ticker"].tolist() == ["OMED.JK"]
-    assert set(out["selection_lane"]) == {"EXECUTION_TOP3_MANUAL_OR_DIRECT"}
+    assert set(out["selection_lane"]) == {"EXECUTION_TOP3_AUTHORIZED_DIRECT"}
 
 
 def test_execution_lane_can_return_less_than_three():

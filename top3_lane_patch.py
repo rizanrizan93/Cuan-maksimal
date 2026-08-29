@@ -15,21 +15,13 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from evidence_governance import apply_three_rank_contract
+from evidence_governance import (
+    apply_three_rank_contract,
+    production_authorization_mask,
+    production_hard_block_mask,
+)
 
-TOP3_LANE_CONTRACT_VERSION = "1.0.0-emir-explicit-top3-lanes"
-
-_HARD_BLOCK_TIERS = {"HARD_BLOCKED"}
-_HARD_BLOCK_CLASSES = {"HARD_BLOCK"}
-_EXECUTION_AUTH_TIERS = {
-    "DIRECT_VERIFIED_READY",
-    "PROXY_EXECUTION_ELIGIBLE_MANUAL_CONFIRMATION",
-    "MANUAL_CONFIRMATION_REQUIRED",
-}
-_EXECUTION_GATE_STATES = {
-    "REAL_MONEY_DIRECT_VERIFIED_READY",
-    "REAL_MONEY_MANUAL_CONFIRMATION_REQUIRED",
-}
+TOP3_LANE_CONTRACT_VERSION = "2.0.0-emir-fail-closed-production-lane"
 
 
 def _truthy(value: Any) -> bool:
@@ -49,25 +41,13 @@ def _numeric(frame: pd.DataFrame, column: str, default: float = np.nan) -> pd.Se
 def _ensure_rank_contract(frame: pd.DataFrame) -> pd.DataFrame:
     if frame is None or frame.empty:
         return frame.copy() if isinstance(frame, pd.DataFrame) else pd.DataFrame()
-    required = {
-        "raw_research_rank",
-        "guarded_decision_priority_rank",
-        "production_real_money_rank",
-    }
-    if required.issubset(frame.columns):
-        return frame.copy()
+    # Recompute even when persisted rank columns exist. A stale broad production
+    # rank must never bypass the current fail-closed authorization contract.
     return apply_three_rank_contract(frame)
 
 
 def _hard_block_mask(frame: pd.DataFrame) -> pd.Series:
-    hard_count = _numeric(frame, "real_money_hard_block_count", 0.0).fillna(0.0).gt(0.0)
-    tier = frame.get(
-        "real_money_authorization_tier", pd.Series("", index=frame.index)
-    ).fillna("").astype(str).str.upper().isin(_HARD_BLOCK_TIERS)
-    gate_class = frame.get(
-        "real_money_gate_class", pd.Series("", index=frame.index)
-    ).fillna("").astype(str).str.upper().isin(_HARD_BLOCK_CLASSES)
-    return hard_count | tier | gate_class
+    return production_hard_block_mask(frame)
 
 
 def _stamp_lane(
@@ -149,37 +129,11 @@ def select_guarded_top3(radar: pd.DataFrame, limit: int = 3) -> pd.DataFrame:
 
 
 def select_execution_top3(radar: pd.DataFrame, limit: int = 3) -> pd.DataFrame:
-    """Manual/direct execution candidates only; never backfill WAIT/HARD_BLOCK."""
+    """Fully authorized production candidates; never backfill WAIT/HARD_BLOCK."""
     local = _ensure_rank_contract(radar)
     if local.empty:
         return local
-
-    entry = local.get(
-        "real_money_entry_candidate", pd.Series(False, index=local.index)
-    ).map(_truthy)
-    hard_block = _hard_block_mask(local)
-
-    if "real_money_authorization_tier" in local.columns:
-        auth = (
-            local["real_money_authorization_tier"]
-            .fillna("")
-            .astype(str)
-            .str.upper()
-            .isin(_EXECUTION_AUTH_TIERS)
-        )
-    else:
-        auth = pd.Series(False, index=local.index)
-
-    if "real_money_gate_state" in local.columns:
-        auth |= (
-            local["real_money_gate_state"]
-            .fillna("")
-            .astype(str)
-            .str.upper()
-            .isin(_EXECUTION_GATE_STATES)
-        )
-
-    eligible = entry & ~hard_block & auth
+    eligible = production_authorization_mask(local)
     local = local.loc[eligible].copy()
     if local.empty:
         return local
@@ -199,8 +153,8 @@ def select_execution_top3(radar: pd.DataFrame, limit: int = 3) -> pd.DataFrame:
     local = local.drop(columns=["_ready", "_production_rank", "_score", "_rr"])
     return _stamp_lane(
         local,
-        lane="EXECUTION_TOP3_MANUAL_OR_DIRECT",
-        note="Only entry candidates with no genuine hard blocker. WAIT_TIMING and HARD_BLOCK rows are never backfilled to reach three names.",
+        lane="EXECUTION_TOP3_AUTHORIZED_DIRECT",
+        note="Only fail-closed, direct-verified production authorizations. WAIT, manual-confirmation, proxy-only, invalid-geometry, and HARD_BLOCK rows are never backfilled.",
         rank_column="production_real_money_rank",
     )
 
@@ -280,7 +234,7 @@ def install() -> dict[str, str]:
         "patch_version": TOP3_LANE_CONTRACT_VERSION,
         "research_lane": "RAW_RESEARCH_TOP3_MAY_INCLUDE_HARD_BLOCKS_RESEARCH_ONLY",
         "guarded_lane": "GUARDED_DECISION_TOP3_EXCLUDES_GENUINE_HARD_BLOCKERS",
-        "execution_lane": "ENTRY_CANDIDATE_ONLY_NO_HARD_BLOCK_NO_WAIT_BACKFILL",
+        "execution_lane": "FAIL_CLOSED_DIRECT_AUTHORIZATION_ONLY_NO_BACKFILL",
         "production_watch_lane": "QUALITY_CANDIDATE_WAIT_TIMING_ONLY",
     }
 

@@ -15,9 +15,20 @@ import time
 import numpy as np
 import pandas as pd
 
-EVIDENCE_GOVERNANCE_VERSION = "1.0.0"
+EVIDENCE_GOVERNANCE_VERSION = "1.1.0"
 
-
+CANONICAL_DECISION_COLUMN = "emir_decision_state"
+LEGACY_DECISION_COLUMN = "emir_action_state"
+ACTIONABLE_PRODUCTION_DECISION_STATES = frozenset({
+    "EMIR_READY_WITH_PRECISE_TRIGGER",
+})
+HARD_BLOCK_DECISION_STATES = frozenset({
+    "EMIR_DATA_INTEGRITY_BLOCK",
+    "EMIR_REJECT_IDX_INTEGRITY",
+    "EMIR_REJECT_SMART_MONEY_DISTRIBUTION",
+    "EMIR_AVOID_RETAIL_EUPHORIA",
+    "EMIR_CALIBRATION_REJECTED",
+})
 def _truthy(value: Any) -> bool:
     if isinstance(value, (bool, np.bool_)):
         return bool(value)
@@ -82,6 +93,99 @@ def _rank(score: pd.Series, eligible: pd.Series) -> pd.Series:
     return out
 
 
+def _text(frame: pd.DataFrame, column: str) -> pd.Series:
+    if column not in frame.columns:
+        return pd.Series("", index=frame.index, dtype=str)
+    return frame[column].fillna("").astype(str).str.strip().str.upper()
+
+
+def _flag(frame: pd.DataFrame, column: str) -> pd.Series:
+    if column not in frame.columns:
+        return pd.Series(False, index=frame.index, dtype=bool)
+    return frame[column].map(_truthy).fillna(False).astype(bool)
+
+
+def canonical_decision_state(frame: pd.DataFrame) -> pd.Series:
+    """Return only the canonical decision state; legacy state never controls gates."""
+    if not isinstance(frame, pd.DataFrame):
+        return pd.Series(dtype=str)
+    return _text(frame, CANONICAL_DECISION_COLUMN)
+
+
+def production_hard_block_mask(frame: pd.DataFrame) -> pd.Series:
+    """Identify explicit hard blockers without treating missing metadata as approval."""
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return pd.Series(False, index=getattr(frame, "index", None), dtype=bool)
+    hard_count = pd.to_numeric(
+        frame.get("real_money_hard_block_count", pd.Series(0.0, index=frame.index)),
+        errors="coerce",
+    ).fillna(0.0).gt(0.0)
+    tier = _text(frame, "real_money_authorization_tier").eq("HARD_BLOCKED")
+    gate_class = _text(frame, "real_money_gate_class").eq("HARD_BLOCK")
+    blocked_decision = canonical_decision_state(frame).isin(HARD_BLOCK_DECISION_STATES)
+    return hard_count | tier | gate_class | blocked_decision
+
+
+def _valid_execution_geometry_mask(frame: pd.DataFrame) -> pd.Series:
+    explicit = _flag(frame, "execution_geometry_valid")
+    entry = pd.to_numeric(
+        frame.get("execution_entry_reference", pd.Series(np.nan, index=frame.index)),
+        errors="coerce",
+    )
+    stop = pd.to_numeric(
+        frame.get("execution_stop_loss", pd.Series(np.nan, index=frame.index)),
+        errors="coerce",
+    )
+    tp1 = pd.to_numeric(
+        frame.get("execution_tp1", pd.Series(np.nan, index=frame.index)),
+        errors="coerce",
+    )
+    tp2 = pd.to_numeric(
+        frame.get("execution_tp2", pd.Series(np.nan, index=frame.index)),
+        errors="coerce",
+    )
+    finite = entry.notna() & stop.notna() & tp1.notna() & tp2.notna()
+    return explicit & finite & stop.lt(entry) & entry.lt(tp1) & tp1.lt(tp2)
+
+
+def _minimum_rr_mask(frame: pd.DataFrame) -> pd.Series:
+    explicit = _flag(frame, "execution_min_rr_pass")
+    path = _text(frame, "preferred_execution_path")
+    rr = pd.to_numeric(
+        frame.get("execution_rr_tp1", pd.Series(np.nan, index=frame.index)),
+        errors="coerce",
+    )
+    required = pd.Series(np.nan, index=frame.index, dtype=float)
+    required.loc[path.eq("ACCUMULATION_PULLBACK")] = 1.5
+    required.loc[path.eq("BREAKOUT_RETEST")] = 1.8
+    return explicit & rr.notna() & required.notna() & rr.ge(required)
+
+
+def production_authorization_mask(frame: pd.DataFrame) -> pd.Series:
+    """Fail-closed authorization shared by production ranking and execution lanes.
+
+    Research and manual-confirmation candidates remain visible elsewhere, but a
+    production row must be direct-verified and fully executable at this snapshot.
+    """
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return pd.Series(False, index=getattr(frame, "index", None), dtype=bool)
+    decision_ok = canonical_decision_state(frame).isin(ACTIONABLE_PRODUCTION_DECISION_STATES)
+    candidate_ok = _flag(frame, "real_money_candidate") & _flag(frame, "real_money_entry_candidate")
+    authorization_ok = (
+        _flag(frame, "real_money_ready")
+        & _text(frame, "real_money_gate_state").eq("REAL_MONEY_DIRECT_VERIFIED_READY")
+        & _text(frame, "entry_authorization_state").eq("SCANNER_AUTHORIZED_DIRECT_VERIFIED")
+    )
+    return (
+        decision_ok
+        & candidate_ok
+        & authorization_ok
+        & ~production_hard_block_mask(frame)
+        & _valid_execution_geometry_mask(frame)
+        & _minimum_rr_mask(frame)
+    ).fillna(False).astype(bool)
+
+
 def apply_three_rank_contract(frame: pd.DataFrame) -> pd.DataFrame:
     if frame is None or frame.empty:
         return frame.copy() if isinstance(frame, pd.DataFrame) else pd.DataFrame()
@@ -92,24 +196,25 @@ def apply_three_rank_contract(frame: pd.DataFrame) -> pd.DataFrame:
     raw = pd.to_numeric(out.get(raw_col, pd.Series(np.nan, index=out.index)), errors="coerce")
     guarded = pd.to_numeric(out.get(guarded_col, raw), errors="coerce")
     production = pd.to_numeric(out.get(production_col, guarded), errors="coerce")
-    blocked = out.get("emir_action_state", pd.Series("", index=out.index)).fillna("").astype(str).str.upper().isin({
-        "EMIR_DATA_INTEGRITY_BLOCK", "EMIR_REJECT_IDX_INTEGRITY", "EMIR_REJECT_SMART_MONEY_DISTRIBUTION",
-        "EMIR_AVOID_RETAIL_EUPHORIA", "EMIR_CALIBRATION_REJECTED",
-    })
+    canonical_state = canonical_decision_state(out)
+    # Compatibility is output-only: the legacy field mirrors the canonical
+    # state and can never override it when a stale persisted value disagrees.
+    out[LEGACY_DECISION_COLUMN] = canonical_state
+    blocked = production_hard_block_mask(out)
     research_ok = raw.notna()
     guarded_ok = guarded.notna() & ~blocked
-    production_ok = pd.Series(False, index=out.index)
-    for column in ("real_money_candidate", "real_money_ready", "production_ready", "real_money_authorization_pass"):
-        if column in out.columns:
-            production_ok |= out[column].map(_truthy)
-    production_ok &= guarded_ok
+    production_ok = production_authorization_mask(out)
+    out["production_authorization_pass"] = production_ok
+    out["real_money_authorization_pass"] = production_ok
+    out["execution_authorized"] = production_ok
+    out["production_ready"] = production_ok
     out["raw_research_score"] = raw
     out["guarded_decision_priority_score"] = guarded
     out["production_real_money_score"] = production
     out["raw_research_rank"] = _rank(raw, research_ok)
     out["guarded_decision_priority_rank"] = _rank(guarded, guarded_ok)
     out["production_real_money_rank"] = _rank(production, production_ok)
-    out["ranking_contract_state"] = "THREE_RANK_CONTRACT_V1_RAW_GUARDED_PRODUCTION"
+    out["ranking_contract_state"] = "THREE_RANK_CONTRACT_V2_FAIL_CLOSED_AUTHORIZATION"
     return out
 
 
@@ -266,7 +371,10 @@ def calibrate_guardrails_walk_forward(
 
 
 __all__ = [
-    "DEFAULT_GUARDRAIL_PARAMETERS", "EVIDENCE_GOVERNANCE_VERSION", "ProviderNegativeCache",
-    "apply_three_rank_contract", "calibrate_guardrails_walk_forward", "is_https_url",
-    "select_enrichment_shortlist", "validate_official_evidence",
+    "ACTIONABLE_PRODUCTION_DECISION_STATES", "CANONICAL_DECISION_COLUMN",
+    "DEFAULT_GUARDRAIL_PARAMETERS", "EVIDENCE_GOVERNANCE_VERSION",
+    "HARD_BLOCK_DECISION_STATES", "LEGACY_DECISION_COLUMN", "ProviderNegativeCache",
+    "apply_three_rank_contract", "calibrate_guardrails_walk_forward",
+    "canonical_decision_state", "is_https_url", "production_authorization_mask",
+    "production_hard_block_mask", "select_enrichment_shortlist", "validate_official_evidence",
 ]

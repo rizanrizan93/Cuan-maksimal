@@ -6,6 +6,8 @@ from typing import Any, Mapping
 import numpy as np
 import pandas as pd
 
+from evidence_governance import apply_three_rank_contract, production_authorization_mask
+
 
 BLOCKED_STATES = {
     "EMIR_DATA_INTEGRITY_BLOCK",
@@ -514,14 +516,14 @@ def calculate_real_money_candidate_score(row: Mapping[str, Any]) -> dict[str, An
 
 
 def select_real_money_top3(radar: pd.DataFrame, limit: int = 3) -> pd.DataFrame:
-    """Return actionable manual/direct candidates only. WAIT/NO_EDGE never enter this table."""
+    """Return only candidates that pass the fail-closed production contract."""
     if radar is None or radar.empty:
         return pd.DataFrame()
     local = radar.copy()
     if "real_money_candidate_score" not in local.columns:
         local = enrich_dashboard_scores(local)
-    entry_mask = local.get("real_money_entry_candidate", pd.Series(False, index=local.index)).fillna(False)
-    local = local.loc[entry_mask].copy()
+    local = apply_three_rank_contract(local)
+    local = local.loc[production_authorization_mask(local)].copy()
     if local.empty:
         return local
     local["_ready_priority"] = local.get("real_money_ready", pd.Series(False, index=local.index)).fillna(False).map({True: 0, False: 1})

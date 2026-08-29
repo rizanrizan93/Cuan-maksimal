@@ -2574,6 +2574,9 @@ def build_emir_profile(
         "emir_overlap_control_state": "FUNDAMENTAL_NOT_REUSED_IN_NARRATIVE_CONVERSION",
         "emir_distribution_penalty_basis": "DIRECT_BROKER_ONLY" if verified_broker_distribution else "OHLCV_DISTRIBUTION_GATE_ONLY_NOT_SCORE_PENALTY",
         "emir_decision_state": state,
+        # Backward-compatible mirror only. All decision-critical consumers use
+        # emir_decision_state as the single canonical state machine.
+        "emir_action_state": state,
         "core_thesis_ready": core_thesis_ready,
         "auto_core_thesis_ready": auto_core_thesis_ready,
         "thesis_ready": thesis_ready,
@@ -2590,6 +2593,9 @@ def build_emir_profile(
         "real_money_candidate": real_money_candidate,
         "real_money_entry_candidate": real_money_entry_candidate,
         "real_money_ready": real_money_ready,
+        "real_money_authorization_pass": real_money_ready,
+        "production_authorization_pass": real_money_ready,
+        "execution_authorized": real_money_ready,
         "real_money_block_reasons": " | ".join(blockers) or "NONE",
         "real_money_manual_conditions": " | ".join(manual_conditions) or "NONE",
         "real_money_fundamental_evidence_tier": "OFFICIAL_VERIFIED" if official_cov >= 50 else "PUBLIC_PROXY_ACCEPTED_MANUAL",
@@ -2598,11 +2604,10 @@ def build_emir_profile(
         "guarded_position_cap_after_manual_confirmation_pct": round(manual_cap,2),
         "entry_authorization_state": "SCANNER_AUTHORIZED_DIRECT_VERIFIED" if real_money_ready else "MANUAL_CONFIRMATION_REQUIRED" if real_money_entry_candidate else "WAIT_TIMING_NO_ENTRY" if real_money_candidate else "NO_ENTRY_AUTHORIZATION",
         "pyramiding_state": "ADD_ONLY_AFTER_CONFIRMATION_NOT_AVERAGE_DOWN_BELOW_INVALIDATION",
-        # Even in RESEARCH mode, a hard real-money blocker must suppress the generic
-        # production_ready flag. Research timing may remain visible through action/state,
-        # but it cannot be mistaken for executable production authorization.
-        "production_ready": bool(real_money_ready if guarded_real_money else ((precise_ready or auto_eod_ready) and real_money_candidate)),
-        "production_tier": ("GUARDED_DIRECT_VERIFIED" if real_money_ready else "MANUAL_CONFIRMATION_REQUIRED" if real_money_entry_candidate else "WAIT_TIMING" if real_money_candidate else "NOT_READY") if guarded_real_money else ("NOT_READY" if not real_money_candidate else "DIRECT_PRECISE" if precise_ready else "AUTO_EOD_PROXY" if auto_eod_ready else "NOT_READY"),
+        # Production means completed authorization in every capital mode. Proxy,
+        # WAIT, and manual-confirmation rows remain research-visible but fail closed.
+        "production_ready": real_money_ready,
+        "production_tier": ("GUARDED_DIRECT_VERIFIED" if guarded_real_money else "DIRECT_PRECISE") if real_money_ready else "MANUAL_CONFIRMATION_REQUIRED" if real_money_entry_candidate else "WAIT_TIMING" if real_money_candidate else "NOT_READY",
         "calibration_mode": str(calibration_mode or "SHADOW_ONLY").upper(),
         "action": action,
         "why_now": why_now,

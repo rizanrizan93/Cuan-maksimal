@@ -97,7 +97,7 @@ def test_low_liquidity_still_blocks_even_with_good_public_proxy():
     assert row["real_money_entry_candidate"] is False
 
 
-def test_real_money_top3_excludes_wait_timing_and_orders_actionable_rows():
+def test_real_money_top3_excludes_wait_and_manual_rows_without_authorization():
     rows = pd.DataFrame([
         {
             "ticker": "ELSA.JK", "real_money_candidate": True, "real_money_entry_candidate": False,
@@ -142,9 +142,7 @@ def test_real_money_top3_excludes_wait_timing_and_orders_actionable_rows():
     ])
     enriched = enrich_dashboard_scores(rows)
     out = select_real_money_top3(enriched, limit=3)
-    assert list(out["ticker"]) == ["MARK.JK", "OMED.JK"] or list(out["ticker"]) == ["OMED.JK", "MARK.JK"]
-    assert "ELSA.JK" not in set(out["ticker"])
-    assert "BISI.JK" not in set(out["ticker"])
+    assert out.empty
 
 
 def test_manual_real_money_candidate_displays_half_percent_risk_even_in_research_scan():
