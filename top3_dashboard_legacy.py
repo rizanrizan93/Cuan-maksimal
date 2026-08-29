@@ -425,9 +425,9 @@ def calculate_next_leader_score(row: Mapping[str, Any]) -> dict[str, Any]:
     elif data_integrity_block:
         state = "NEXT_LEADER_RESEARCH"
         quality_flags.append("DATA_INTEGRITY_REVIEW_REQUIRED")
-    elif score >= 70 and effective_fundamental >= 65 and effective_data_quality >= 80 and (not np.isfinite(future_rank_signal) or (future_rank_coverage >= 50 and _score(future_rank_signal, 0) >= 60)):
+    elif score >= 80 and effective_fundamental >= 65 and effective_data_quality >= 80 and (not np.isfinite(future_rank_signal) or (future_rank_coverage >= 50 and _score(future_rank_signal, 0) >= 60)):
         state = "NEXT_LEADER_HIGH_CONVICTION"
-    elif score >= 55 and effective_fundamental >= 55 and effective_data_quality >= 75:
+    elif score >= 75 and effective_fundamental >= 55 and effective_data_quality >= 75:
         state = "NEXT_LEADER_WATCH"
     else:
         state = "NEXT_LEADER_RESEARCH"
