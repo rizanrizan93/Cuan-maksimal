@@ -645,6 +645,9 @@ def calculate_market_features(frame: pd.DataFrame, benchmark: pd.DataFrame | Non
     high20 = _finite(high.tail(20).max(), np.nan)
     prior_high20 = _finite(high.shift(1).tail(20).max(), np.nan)
     high55 = _finite(high.tail(55).max(), np.nan)
+    prior_high55 = _finite(high.shift(1).tail(55).max(), np.nan)
+    prior_high120 = _finite(high.shift(1).tail(120).max(), np.nan)
+    prior_high252 = _finite(high.shift(1).tail(252).max(), np.nan)
     low20 = _finite(low.tail(20).min(), np.nan)
     prior_low20 = _finite(low.shift(1).tail(20).min(), np.nan)
     previous_low20 = _finite(low.iloc[-40:-20].min(), np.nan) if len(low) >= 40 else np.nan
@@ -798,6 +801,11 @@ def calculate_market_features(frame: pd.DataFrame, benchmark: pd.DataFrame | Non
         "distribution_score": round(distribution_score, 1), "crowding_score": round(crowding_score, 1),
         "extension_atr": round(extension_atr, 2) if np.isfinite(extension_atr) else np.nan,
         "price_stage": stage, "high20": round(high20, 4), "high55": round(high55, 4), "low20": round(low20, 4),
+        "prior_high20": round(prior_high20, 4) if np.isfinite(prior_high20) else np.nan,
+        "prior_high55": round(prior_high55, 4) if np.isfinite(prior_high55) else np.nan,
+        "prior_high120": round(prior_high120, 4) if np.isfinite(prior_high120) else np.nan,
+        "prior_high252": round(prior_high252, 4) if np.isfinite(prior_high252) else np.nan,
+        "previous_high20": round(previous_high20, 4) if np.isfinite(previous_high20) else np.nan,
         "market_structure_mode": structure_mode,
         "market_structure_score": round(market_structure_score, 1),
         "reversal_score": round(reversal_score, 1),
@@ -1357,6 +1365,7 @@ def build_outcome_calibration(frame: pd.DataFrame | None) -> dict[str, dict[str,
         "return": "return_pct",
         "max_drawdown": "max_drawdown_pct",
         "verified": "outcome_verified",
+        "universe_pit_verified": "universe_point_in_time_verified",
     }
     for source, target in aliases.items():
         if source in local.columns and target not in local.columns:
@@ -1374,6 +1383,8 @@ def build_outcome_calibration(frame: pd.DataFrame | None) -> dict[str, dict[str,
         if column not in local.columns:
             local[column] = "UNKNOWN"
         local[column] = local[column].fillna("UNKNOWN").astype(str)
+    if "universe_point_in_time_verified" not in local.columns:
+        local["universe_point_in_time_verified"] = False
 
     def metrics(group: pd.DataFrame) -> dict[str, Any]:
         returns = group["return_pct"].dropna()
@@ -1384,7 +1395,11 @@ def build_outcome_calibration(frame: pd.DataFrame | None) -> dict[str, dict[str,
         median_drawdown = _finite(drawdowns.median(), np.nan) if len(drawdowns) else np.nan
         invalidated = group.get("thesis_invalidated", pd.Series(False, index=group.index)).map(_truthy)
         invalidation_rate = 100.0 * float(invalidated.mean()) if len(group) else np.nan
-        if n < 30:
+        pit = group["universe_point_in_time_verified"].map(_truthy)
+        pit_pct = 100.0 * float(pit.mean()) if len(group) else 0.0
+        if pit_pct < 100.0:
+            state = "SURVIVORSHIP_BIAS_UNCONTROLLED_SHADOW_ONLY"
+        elif n < 30:
             state = "INSUFFICIENT_SAMPLE_SHADOW_ONLY"
         elif (np.isfinite(win_rate) and win_rate < 40) or (np.isfinite(median_return) and median_return <= 0) or (np.isfinite(median_drawdown) and median_drawdown <= -18):
             state = "EMPIRICAL_EDGE_REJECTED"
@@ -1398,6 +1413,7 @@ def build_outcome_calibration(frame: pd.DataFrame | None) -> dict[str, dict[str,
             "outcome_median_return_pct": round(median_return, 2) if np.isfinite(median_return) else np.nan,
             "outcome_median_drawdown_pct": round(median_drawdown, 2) if np.isfinite(median_drawdown) else np.nan,
             "outcome_thesis_invalidation_rate_pct": round(invalidation_rate, 1) if np.isfinite(invalidation_rate) else np.nan,
+            "outcome_universe_pit_verified_pct": round(pit_pct, 1),
             "outcome_calibration_state": state,
         }
 
@@ -1770,6 +1786,29 @@ def build_execution_plan(
             return np.nan
         return (target - entry) / entry_risk
 
+    observed_resistance = sorted({
+        round_idx(value, "up")
+        for value in (
+            _finite(features.get("previous_high20"), np.nan),
+            _finite(features.get("prior_high20"), np.nan),
+            _finite(features.get("prior_high55"), np.nan),
+            _finite(features.get("prior_high120"), np.nan),
+            _finite(features.get("prior_high252"), np.nan),
+        )
+        if np.isfinite(value) and value > 0
+    })
+
+    def _structural_targets(entry: float, stop_value: float, rr1_floor: float, rr2_floor: float) -> tuple[float, float] | None:
+        candidates = [value for value in observed_resistance if value > entry]
+        first = next((value for value in candidates if _rr(entry, value, stop_value) >= rr1_floor), np.nan)
+        if not np.isfinite(first):
+            return None
+        second = next(
+            (value for value in candidates if value > first and _rr(entry, value, stop_value) >= rr2_floor),
+            np.nan,
+        )
+        return (float(first), float(second)) if np.isfinite(second) else None
+
     # Plan A — accumulation/pullback. The breakout trigger is NOT part of this geometry.
     entry_mid = (entry_low + entry_high) / 2
     structure_stop = round_idx(min(low20, entry_low - 1.10 * atr), "down")
@@ -1785,8 +1824,15 @@ def build_execution_plan(
             "execution_geometry_state": "ACCUMULATION_RISK_NON_POSITIVE",
             "preferred_execution_path": "NONE",
         }
-    tp1 = round_idx(entry_mid + 1.8 * risk, "up")
-    tp2 = round_idx(entry_mid + 3.0 * risk, "up")
+    accumulation_structural = _structural_targets(entry_high, stop, 1.5, 2.0)
+    accumulation_targets_structural = accumulation_structural is not None
+    if accumulation_targets_structural:
+        tp1, tp2 = accumulation_structural
+    else:
+        # Research-only fallback. These levels remain visible for scenario work,
+        # but the real-money gate below refuses to authorize synthetic targets.
+        tp1 = round_idx(entry_mid + 1.8 * risk, "up")
+        tp2 = round_idx(entry_mid + 3.0 * risk, "up")
     accumulation_valid = bool(stop < entry_low <= entry_high < tp1 < tp2)
     if not accumulation_valid:
         return {
@@ -1812,8 +1858,13 @@ def build_execution_plan(
     if breakout_stop >= breakout_entry:
         breakout_stop = round_idx(breakout_entry - tick, "down")
     breakout_risk = breakout_entry - breakout_stop
-    breakout_tp1 = round_idx(breakout_entry + 1.8 * breakout_risk, "up")
-    breakout_tp2 = round_idx(breakout_entry + 3.0 * breakout_risk, "up")
+    breakout_structural = _structural_targets(breakout_entry, breakout_stop, 1.8, 2.5)
+    breakout_targets_structural = breakout_structural is not None
+    if breakout_targets_structural:
+        breakout_tp1, breakout_tp2 = breakout_structural
+    else:
+        breakout_tp1 = round_idx(breakout_entry + 1.8 * breakout_risk, "up")
+        breakout_tp2 = round_idx(breakout_entry + 3.0 * breakout_risk, "up")
     breakout_valid = bool(breakout_risk > 0 and breakout_stop < breakout_entry < breakout_tp1 < breakout_tp2)
 
     accum_rr1 = _rr(entry_high, tp1, stop)
@@ -1854,6 +1905,7 @@ def build_execution_plan(
         execution_rr2 = breakout_rr2
         selected_min_rr_pass = breakout_min_rr_pass
         selected_geometry_valid = breakout_valid
+        selected_targets_structural = breakout_targets_structural
     elif preferred == "ACCUMULATION_PULLBACK":
         execution_entry_low, execution_entry_high = entry_low, entry_high
         execution_entry_reference = entry_high  # conservative RR reference
@@ -1865,12 +1917,14 @@ def build_execution_plan(
         execution_rr2 = accum_rr2
         selected_min_rr_pass = accumulation_min_rr_pass
         selected_geometry_valid = accumulation_valid
+        selected_targets_structural = accumulation_targets_structural
     else:
         execution_entry_low = execution_entry_high = execution_entry_reference = np.nan
         execution_trigger = execution_stop = execution_tp1 = execution_tp2 = np.nan
         execution_rr1 = execution_rr2 = np.nan
         selected_min_rr_pass = False
         selected_geometry_valid = False
+        selected_targets_structural = False
 
     selected_geometry_valid = bool(
         selected_geometry_valid
@@ -1934,7 +1988,11 @@ def build_execution_plan(
         "execution_geometry_state": "VALID_SELECTED_PATH" if selected_geometry_valid else "NO_VALID_SELECTED_PATH",
         "hard_stop_distance_pct": round(stop_distance_pct, 2),
         "risk_doctrine_state": "SEPARATE_ACCUMULATION_VS_BREAKOUT_RISK_GEOMETRY_V2",
-        "execution_target_basis": "R_MULTIPLE_RESEARCH_TARGETS_V1",
+        "execution_target_basis": "OBSERVED_PRIOR_RESISTANCE" if selected_targets_structural else "R_MULTIPLE_FALLBACK_RESEARCH_ONLY",
+        "execution_targets_structural": bool(selected_targets_structural),
+        "observed_resistance_candidates": observed_resistance,
+        "accumulation_targets_structural": bool(accumulation_targets_structural),
+        "breakout_targets_structural": bool(breakout_targets_structural),
         "trigger_provenance": "DIRECT_BID_OFFER_EVIDENCE" if orderbook_verified else "OHLCV_EOD_MICROSTRUCTURE_PROXY" if auto_eod_ready else "OHLCV_STRUCTURE_PROXY_WAIT_DIRECT_BID_OFFER",
     }
 
@@ -2061,14 +2119,22 @@ def build_emir_profile(
     ])
     distribution = _finite(features.get("distribution_score"), 0)
     broker_shift = str(broker.get("broker_inventory_shift_state") or "")
-    if broker_shift == "DISTRIBUTION_DOMINANT" or "INVENTORY_RELEASE" in broker_shift:
+    verified_broker_distribution = bool(
+        broker_coverage >= 52
+        and (broker_shift == "DISTRIBUTION_DOMINANT" or "INVENTORY_RELEASE" in broker_shift)
+    )
+    if verified_broker_distribution:
         distribution = max(distribution, 70)
+    # OHLCV distribution is already embedded in the flow/lifecycle families and
+    # remains a hard decision gate. Only independent broker distribution is
+    # allowed to subtract conviction again.
+    distribution_penalty_signal = distribution if verified_broker_distribution else 0.0
     crowding = _finite(features.get("crowding_score"), 0)
     cannibalisation = _finite(broker.get("retail_cannibalisation_risk"), 0)
     friction = _finite(features.get("execution_friction_score"), 0)
     negative = "NEGATIVE" in str(narrative.get("narrative_state") or "") or "CONTRADICTED" in str(narrative.get("narrative_state") or "")
     penalty = (
-        0.18 * distribution + 0.13 * max(0.0, crowding - 55)
+        0.18 * distribution_penalty_signal + 0.13 * max(0.0, crowding - 55)
         + 0.08 * cannibalisation + 0.06 * max(0.0, friction - 45)
         + (12 if negative else 0)
     )
@@ -2389,10 +2455,13 @@ def build_emir_profile(
     if capacity_block: blockers.append("EXECUTION_CAPACITY_BLOCK")
     execution_geometry_valid = bool(plan.get("execution_geometry_valid", False))
     execution_min_rr_pass = bool(plan.get("execution_min_rr_pass", False))
+    execution_targets_structural = bool(plan.get("execution_targets_structural", False))
     if not execution_geometry_valid:
         blockers.append("EXECUTION_GEOMETRY_INVALID")
     elif not execution_min_rr_pass:
         blockers.append("NO_EXECUTION_PATH_WITH_MIN_RR")
+    if not execution_targets_structural:
+        blockers.append("EXECUTION_TARGETS_NOT_STRUCTURAL")
     real_money_candidate = len(blockers) == 0
     # Candidate quality and entry timing are intentionally separate. A good business can
     # remain a real-money research candidate while WAIT_REACCUMULATION / NO_EDGE prevents
@@ -2503,6 +2572,7 @@ def build_emir_profile(
         "emir_evidence_coverage_pct": round(evidence_coverage, 1),
         "emir_scoring_lineage_state": "DISJOINT_EVIDENCE_PILLARS_V2",
         "emir_overlap_control_state": "FUNDAMENTAL_NOT_REUSED_IN_NARRATIVE_CONVERSION",
+        "emir_distribution_penalty_basis": "DIRECT_BROKER_ONLY" if verified_broker_distribution else "OHLCV_DISTRIBUTION_GATE_ONLY_NOT_SCORE_PENALTY",
         "emir_decision_state": state,
         "core_thesis_ready": core_thesis_ready,
         "auto_core_thesis_ready": auto_core_thesis_ready,
