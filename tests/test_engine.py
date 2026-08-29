@@ -19,6 +19,7 @@ from narrative_flow_engine import (  # noqa: E402
     PUBLIC_FORMULA_REGISTRY,
     aggregate_broker_summary,
     build_emir_profile,
+    build_execution_plan,
     calculate_market_context,
     calculate_market_features,
     calculate_sector_context,
@@ -119,6 +120,8 @@ def strong_fundamental():
         "fundamental_data_quality_score": 85.0,
         "fundamental_state": "FUTURE_FUNDAMENTAL_SUPPORTIVE",
         "fundamental_provenance_state": "VERIFIED_TEST_FIXTURE",
+        "fundamental_observed_at": "2026-01-01T00:00:00Z",
+        "fundamental_availability_state": "POINT_IN_TIME_OBSERVED",
     }
 
 
@@ -657,3 +660,63 @@ def test_narrative_excludes_events_published_after_historical_as_of():
     assert result["narrative_future_event_filtered_count"] == 1
     assert result["narrative_state"] == "NO_ACTIVE_PUBLIC_NARRATIVE"
     assert result["narrative_risk_flags"] == "NO_POINT_IN_TIME_ELIGIBLE_EVENT"
+
+
+def test_execution_rr_is_measured_from_structural_targets_not_preselected_r_multiple():
+    features = {
+        "last_price": 100.0,
+        "atr14": 4.0,
+        "ema20": 95.0,
+        "high20": 110.0,
+        "high55": 145.0,
+        "low20": 85.0,
+    }
+    plan = build_execution_plan(
+        features,
+        ready=False,
+        lifecycle="MOMENTUM_TRIGGERED",
+        orderbook={},
+    )
+    assert plan["execution_target_basis"] == "STRUCTURAL_RESISTANCE_OR_RANGE_MEASURED_MOVE_V1"
+    assert plan["breakout_geometry_valid"] is True
+    assert plan["breakout_rr_tp1"] > 1.8
+    assert plan["breakout_rr_tp1"] != 1.8
+    assert plan["breakout_tp1"] > plan["breakout_entry"]
+
+
+def test_direct_ready_requires_point_in_time_fundamental_lineage():
+    features, narrative, broker, ownership, market, sector, integrity = strong_inputs()
+    fundamental = strong_fundamental()
+    fundamental.update({
+        "fundamental_official_source_coverage_pct": 90.0,
+        "operating_cash_flow_ttm": 100.0,
+        "free_cash_flow_proxy_ttm": 80.0,
+        "fundamental_cashflow_state": "OCF_FCF_TTM_AVAILABLE",
+        "fundamental_cashflow_quality_state": "CASHFLOW_POSITIVE_CONVERTING",
+    })
+    orderbook = {
+        "orderbook_trigger_score": 80.0,
+        "orderbook_coverage_pct": 100.0,
+        "orderbook_provenance_state": "DIRECT_SOURCE_VERIFIED",
+        "precise_trigger_price": float(features["high20"]),
+    }
+
+    verified = build_emir_profile(
+        ticker="TEST", features=features, narrative=narrative, broker=broker,
+        ownership=ownership, market=market, sector=sector, integrity=integrity,
+        fundamental=fundamental, orderbook=orderbook, deep_reviewed=True,
+        capital_mode="GUARDED_REAL_MONEY",
+    )
+    assert verified["fundamental_point_in_time_ready"] is True
+
+    fundamental.pop("fundamental_observed_at")
+    fundamental["fundamental_availability_state"] = "AVAILABILITY_TIMESTAMP_UNVERIFIED"
+    unverified = build_emir_profile(
+        ticker="TEST", features=features, narrative=narrative, broker=broker,
+        ownership=ownership, market=market, sector=sector, integrity=integrity,
+        fundamental=fundamental, orderbook=orderbook, deep_reviewed=True,
+        capital_mode="GUARDED_REAL_MONEY",
+    )
+    assert unverified["fundamental_point_in_time_ready"] is False
+    assert unverified["real_money_ready"] is False
+    assert unverified["entry_authorization_state"] != "SCANNER_AUTHORIZED_DIRECT_VERIFIED"
