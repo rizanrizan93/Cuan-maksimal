@@ -222,28 +222,64 @@ def combine_direct_evidence(
 
 
 def position_builder(row: pd.Series, capital: float, risk_pct: float) -> dict[str, Any]:
+    """Size the actual selected execution path, never an unrelated legacy plan."""
+    selected_path = str(row.get("preferred_execution_path") or "").upper().strip()
+    execution_low = pd.to_numeric(row.get("execution_entry_low"), errors="coerce")
+    execution_high = pd.to_numeric(row.get("execution_entry_high"), errors="coerce")
+    execution_stop = pd.to_numeric(row.get("execution_stop_loss"), errors="coerce")
+    has_selected_geometry = bool(
+        selected_path not in {"", "NONE"}
+        and np.isfinite(execution_low)
+        and np.isfinite(execution_high)
+        and np.isfinite(execution_stop)
+    )
+    if has_selected_geometry:
+        entry_low = float(execution_low)
+        entry_high = float(execution_high)
+        stop_loss = float(execution_stop)
+        sizing_basis = "SELECTED_EXECUTION_PATH"
+    else:
+        entry_low = pd.to_numeric(row.get("entry_low"), errors="coerce")
+        entry_high = pd.to_numeric(row.get("entry_high"), errors="coerce")
+        stop_loss = pd.to_numeric(row.get("stop_loss"), errors="coerce")
+        sizing_basis = "LEGACY_PLAN_A_FALLBACK"
+    position_cap = pd.to_numeric(row.get("position_cap_pct"), errors="coerce")
     numbers = {
-        key: pd.to_numeric(pd.Series([row.get(key)]), errors="coerce").iloc[0]
-        for key in ("entry_low", "entry_high", "stop_loss", "position_cap_pct")
+        "entry_low": entry_low, "entry_high": entry_high,
+        "stop_loss": stop_loss, "position_cap_pct": position_cap,
     }
     if not all(np.isfinite(value) for value in numbers.values()) or numbers["position_cap_pct"] <= 0:
-        return {"lot": 0, "position_value": 0.0, "risk_idr": 0.0, "position_state": "NO_EXECUTABLE_POSITION"}
+        return {
+            "lot": 0, "position_value": 0.0, "risk_idr": 0.0,
+            "position_state": "NO_EXECUTABLE_POSITION",
+            "position_sizing_basis": sizing_basis,
+            "position_sizing_path": selected_path or "LEGACY",
+        }
     entry = (numbers["entry_low"] + numbers["entry_high"]) / 2
     per_share_risk = entry - numbers["stop_loss"]
     if per_share_risk <= 0:
-        return {"lot": 0, "position_value": 0.0, "risk_idr": 0.0, "position_state": "INVALID_RISK"}
+        return {
+            "lot": 0, "position_value": 0.0, "risk_idr": 0.0,
+            "position_state": "INVALID_RISK",
+            "position_sizing_basis": sizing_basis,
+            "position_sizing_path": selected_path or "LEGACY",
+        }
     risk_budget = capital * risk_pct / 100
     max_value = capital * numbers["position_cap_pct"] / 100
-    shares_by_risk = np.floor(risk_budget / per_share_risk / 100) * 100
-    shares_by_cap = np.floor(max_value / entry / 100) * 100
-    shares = max(0, min(shares_by_risk, shares_by_cap))
+    shares_by_risk = risk_budget / per_share_risk
+    shares_by_value = max_value / entry if entry > 0 else 0.0
+    shares = max(0, int(min(shares_by_risk, shares_by_value) // 100) * 100)
     return {
         "lot": int(shares / 100),
         "position_value": round(shares * entry, 2),
         "risk_idr": round(shares * per_share_risk, 2),
         "position_state": "POSITION_READY" if shares >= 100 else "CAPITAL_OR_RISK_TOO_SMALL",
+        "position_sizing_basis": sizing_basis,
+        "position_sizing_path": selected_path or "LEGACY",
+        "position_sizing_entry": round(float(entry), 4),
+        "position_sizing_stop": round(float(numbers["stop_loss"]), 4),
+        "position_sizing_risk_per_share": round(float(per_share_risk), 4),
     }
-
 
 def radar_sort(frame: pd.DataFrame) -> pd.DataFrame:
     if frame.empty:
