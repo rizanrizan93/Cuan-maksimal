@@ -127,6 +127,11 @@ def test_auto_eod_ready_is_capped_and_not_precise():
         "trend_score": 85.0, "liquidity_score": 80.0, "distribution_score": 8.0,
         "crowding_score": 40.0, "price_stage": "MARKUP", "absorption_score": 80.0,
         "market_structure_score": 80.0, "market_structure_mode": "CONTINUATION",
+        "previous_high20": float(features.get("high20", 0.0)) * 1.10,
+        "prior_high20": float(features.get("high20", 0.0)) * 1.12,
+        "prior_high55": float(features.get("high20", 0.0)) * 1.22,
+        "prior_high120": float(features.get("high20", 0.0)) * 1.35,
+        "prior_high252": float(features.get("high20", 0.0)) * 1.50,
     })
     narrative = {
         "narrative_score": 80.0, "narrative_coverage_pct": 85.0,
