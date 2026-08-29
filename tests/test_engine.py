@@ -634,3 +634,26 @@ def test_parse_user_400_sector_idx_ic_alias():
     assert frame.iloc[0]["sector"] == "Basic Materials"
     assert frame.iloc[0]["cap_universe"] == "SMALL_MID"
     assert frame.iloc[0]["sharia_status"] == "YES"
+
+
+def test_narrative_excludes_events_published_after_historical_as_of():
+    as_of = pd.Timestamp("2026-06-30T00:00:00Z")
+    events = pd.DataFrame([{
+        "ticker": "TEST.JK",
+        "published_at": "2026-07-05T00:00:00Z",
+        "title": "TEST announces major capacity expansion",
+        "summary": "New capacity supports revenue, margin, earnings and cash flow",
+        "publisher": "Issuer",
+        "url": "https://issuer.example/future-event",
+        "source_tier": "ISSUER",
+        "source_verified": True,
+    }])
+    result = score_narrative_events(
+        events,
+        as_of=as_of,
+        issuer_context={"theme": "capacity expansion", "catalyst": "capacity"},
+    )
+    assert result["narrative_event_count"] == 0
+    assert result["narrative_future_event_filtered_count"] == 1
+    assert result["narrative_state"] == "NO_ACTIVE_PUBLIC_NARRATIVE"
+    assert result["narrative_risk_flags"] == "NO_POINT_IN_TIME_ELIGIBLE_EVENT"
