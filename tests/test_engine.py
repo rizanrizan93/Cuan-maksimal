@@ -63,6 +63,12 @@ def strong_inputs() -> tuple[dict, dict, dict, dict, dict, dict, dict]:
         "market_structure_score": 80.0,
         "market_structure_mode": "CONTINUATION",
         "continuation_price_flow_score": 80.0,
+        # Explicit observed resistance ladder keeps ready-fixture targets structural.
+        "previous_high20": float(features.get("high20", 0.0)) * 1.10,
+        "prior_high20": float(features.get("high20", 0.0)) * 1.12,
+        "prior_high55": float(features.get("high20", 0.0)) * 1.22,
+        "prior_high120": float(features.get("high20", 0.0)) * 1.35,
+        "prior_high252": float(features.get("high20", 0.0)) * 1.50,
     })
     narrative = {
         "narrative_score": 80.0,
@@ -404,6 +410,7 @@ def test_outcome_memory_guarded_rejects_adverse_empirical_state():
         "ticker": f"T{i}.JK", "outcome_verified": True, "emir_lifecycle": "MOMENTUM_TRIGGERED",
         "market_structure_mode": "CONTINUATION_SETUP", "return_pct": -2 if i < 25 else 1,
         "max_drawdown_pct": -12, "thesis_invalidated": i < 20,
+        "universe_point_in_time_verified": True,
     } for i in range(40)])
     calibration = build_outcome_calibration(outcomes)
     features, narrative, broker, ownership, market, sector, integrity = strong_inputs()
@@ -508,6 +515,7 @@ def test_shadow_only_outcome_memory_never_blocks_decision():
         "market_structure_mode": "CONTINUATION_SETUP",
         "return_pct": -3.0, "max_drawdown_pct": -20.0,
         "thesis_invalidated": True,
+        "universe_point_in_time_verified": True,
     } for i in range(40)])
     calibration = build_outcome_calibration(outcomes)
     features, narrative, broker, ownership, market, sector, integrity = strong_inputs()
