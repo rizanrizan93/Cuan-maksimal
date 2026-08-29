@@ -96,7 +96,8 @@ def test_next_leader_penalizes_unconfirmed_inflection_and_lagging_period():
     assert both["next_leader_score"] < lagging["next_leader_score"]
 
 
-def test_schema_v5_rejects_old_v4_payload_without_pit_contract():
+
+def test_schema_v4_remains_research_compatible_but_cannot_invent_pit_lineage():
     import persistent_cache as pc
     payload = {
         "fundamental_cache_schema_version": "4",
@@ -107,9 +108,15 @@ def test_schema_v5_rejects_old_v4_payload_without_pit_contract():
         "net_debt_to_equity": 0.1, "current_ratio": 1.5, "cash_to_debt_ratio": 2.0,
         "fundamental_period_alignment_state": "ALIGNED", "fundamental_cashflow_state": "CASHFLOW_TTM_MISSING",
         "fundamental_data_quality_score": 80.0, "fundamental_score_cap": 76.0,
+        "fundamental_growth_consistency_state": "QUARTER_AND_YTD_CONFIRMED",
+        "fundamental_growth_consistency_score": 100.0,
+        "revenue_growth_ytd_yoy_pct": 10.0, "earnings_growth_ytd_yoy_pct": 10.0,
     }
-    assert not pc._fundamental_payload_compatible(payload)
-
+    assert pc._fundamental_payload_compatible(payload)
+    upgraded = ae.recalibrate_cached_fundamental_snapshot(payload)
+    assert upgraded["fundamental_cache_schema_version"] == "5"
+    assert upgraded["fundamental_observed_at"] == ""
+    assert upgraded["fundamental_availability_state"] == "AVAILABILITY_TIMESTAMP_UNVERIFIED_LEGACY_CACHE"
 
 def test_yfinance_snapshot_caps_suni_like_latest_quarter_rebound_when_h1_still_negative(monkeypatch):
     from types import SimpleNamespace
