@@ -1,4 +1,11 @@
-# IDX Emir Autonomous Scanner v1.9.8 — Persistence Integrity
+# IDX Emir Autonomous Scanner v1.9.28 — Audit Integrity Hardening
+
+Current production contract: **1.9.28-audit-integrity-hardening**.
+
+The v1.9.8 sections below are retained as historical migration notes. Current
+authorization additionally requires point-in-time evidence, structural execution
+targets, and survivorship-controlled outcome calibration before empirical memory
+can affect guarded decisions.
 
 Clean-room public-framework implementation. It is not affiliated with Emir Parengkuan and does not claim to reproduce a proprietary CAK formula.
 
@@ -49,9 +56,13 @@ The new **Real Money Gate** tab is the final authorization layer.
 
 v1.9 continues to use **schema v8**. No destructive migration and no new DB migration are required if v8 is already healthy. Run `database/verify_v8.sql` before the first real-money scan.
 
-## Validation in the build environment
+## Historical validation baseline
 
-- pytest: **175 passed**
+The counts below describe the original v1.9 validation baseline and are not the
+current HEAD test count. Current HEAD is governed by the GitHub
+`production-hardening` workflow.
+
+- historical pytest baseline: **175 passed**
 - v1.9-specific tests: XBRL parse, official/proxy reconciliation, OCF/FCF extraction, market blend, durable official memory, EOD-proxy real-money block, direct-verified risk/cap bounds
 - synthetic 400 core engine: **400/400 valid**, 0 hierarchy errors, 0 gate bypass
 - guarded real-money 400: **399 EOD-proxy rows → 0 production-ready**, 1 direct-verified control → 1 ready; max risk **0.75%**, max position cap **7.0%** in fixture
