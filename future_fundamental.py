@@ -116,6 +116,10 @@ def _event_bucket(events: pd.DataFrame | None, terms: tuple[str, ...], as_of: An
         if not _event_matches_terms(row, terms):
             continue
         published = pd.to_datetime(row.get("published_at") or row.get("event_date"), errors="coerce", utc=True)
+        # Point-in-time safety: a project/contract event observed after `as_of`
+        # cannot contribute to a historical decision.
+        if pd.notna(published) and published > now:
+            continue
         age_days = max(0.0, (now - published).total_seconds() / 86400.0) if pd.notna(published) else 120.0
         freshness = 100.0 * math.exp(-age_days / 90.0)
         verified = _truthy(row.get("source_verified"))
@@ -160,6 +164,9 @@ def _forward_event_stats(events: pd.DataFrame | None, as_of: Any = None) -> dict
         text = _event_text(row)
         if not _event_matches_terms(row, terms):
             continue
+        published = pd.to_datetime(row.get("published_at") or row.get("event_date"), errors="coerce", utc=True)
+        if pd.notna(published) and published > now:
+            continue
         key = (str(row.get("title") or ""), str(row.get("url") or ""), str(row.get("published_at") or row.get("event_date") or ""))
         if key in seen:
             continue
@@ -169,7 +176,6 @@ def _forward_event_stats(events: pd.DataFrame | None, as_of: Any = None) -> dict
         is_official = bool(is_verified and tier in {"OFFICIAL", "ISSUER", "REGULATOR"})
         verified += int(is_verified)
         official += int(is_official)
-        published = pd.to_datetime(row.get("published_at") or row.get("event_date"), errors="coerce", utc=True)
         if pd.notna(published):
             ages.append(max(0.0, (now - published).total_seconds() / 86400.0))
     return {"count": len(seen), "verified": verified, "official": official, "latest_days": min(ages) if ages else np.nan}
