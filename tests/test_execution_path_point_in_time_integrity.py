@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from narrative_flow_engine import build_execution_plan
 from resumable_scan import _point_in_time_event_frame, position_builder
 
 
@@ -48,3 +49,35 @@ def test_central_event_gate_excludes_future_and_undated_rows_before_any_scorer()
     assert out["title"].tolist() == ["available"]
     assert excluded == 2
     assert set(out["point_in_time_state"]) == {"AVAILABLE_AS_OF_DECISION"}
+
+
+
+def test_synthetic_r_multiple_targets_are_marked_research_only():
+    plan = build_execution_plan(
+        {
+            "last_price": 100.0,
+            "atr14": 4.0,
+            "ema20": 99.0,
+            "high20": 103.0,
+            "low20": 94.0,
+            "previous_high20": float("nan"),
+            "prior_high20": float("nan"),
+            "prior_high55": float("nan"),
+            "prior_high120": float("nan"),
+            "prior_high252": float("nan"),
+        },
+        ready=True,
+        lifecycle="MOMENTUM_TRIGGERED",
+        orderbook={
+            "precise_trigger_price": 103.0,
+            "orderbook_provenance_state": "DIRECT_SOURCE_VERIFIED",
+        },
+    )
+
+    assert plan["execution_target_basis"] == "R_MULTIPLE_FALLBACK_RESEARCH_ONLY"
+    assert plan["execution_targets_structural"] is False
+
+
+def test_real_money_gate_contains_structural_target_blocker():
+    source = (ROOT / "narrative_flow_engine.py").read_text(encoding="utf-8")
+    assert 'blockers.append("EXECUTION_TARGETS_NOT_STRUCTURAL")' in source
