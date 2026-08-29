@@ -106,7 +106,7 @@ def _one(ticker: str, company_name: str, lookback_days: int, timeout: float) -> 
     except Exception as exc:
         return [], {**base_audit, "state": "FORWARD_CHECK_FAILED_RETRYABLE", "coverage_pct": 0.0, "detail": f"{type(exc).__name__}: {str(exc)[:180]}"}
 
-    cutoff = checked - pd.Timedelta(days=max(7, int(lookback_days)))
+    cutoff = checked - pd.to_timedelta(max(7, int(lookback_days)), unit="D")
     events: list[dict[str, Any]] = []
     publishers: set[str] = set()
     scanned = matched = 0
