@@ -973,8 +973,17 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
         for _, row in official_fundamental_frame.iterrows():
             if not bool(row.get("idx_official_source_verified")): continue
             ticker=str(row.get("ticker") or ""); period_end=str(row.get("idx_official_period_end") or "")
+            observed_at = pd.to_datetime(row.get("idx_official_observed_at"), errors="coerce", utc=True)
+            availability_state = str(row.get("idx_official_availability_state") or "").upper()
+            # Accounting period-end is not a publication date. Using it here would
+            # create look-ahead leakage (e.g. Q2 treated as known on 30 June).
+            # Only a recorded availability timestamp may date the filing event.
+            if pd.isna(observed_at) or "POINT_IN_TIME" not in availability_state:
+                continue
             official_events.append({
-                "ticker": ticker, "published_at": pd.to_datetime(period_end, errors="coerce", utc=True),
+                "ticker": ticker, "published_at": observed_at,
+                "financial_period_end": period_end,
+                "filing_availability_state": availability_state,
                 "title": f"IDX Official Financial Statement {ticker.replace('.JK','')} {period_end}",
                 "summary": f"Official IDX XBRL filing; revenue_yoy={row.get('idx_official_revenue_growth_yoy_pct')}; earnings_yoy={row.get('idx_official_earnings_growth_yoy_pct')}; cashflow={row.get('idx_official_cashflow_state')}",
                 "publisher":"Indonesia Stock Exchange", "url":row.get("idx_official_source_url"),
