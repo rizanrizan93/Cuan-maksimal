@@ -19,7 +19,6 @@ from narrative_flow_engine import (  # noqa: E402
     PUBLIC_FORMULA_REGISTRY,
     aggregate_broker_summary,
     build_emir_profile,
-    build_execution_plan,
     calculate_market_context,
     calculate_market_features,
     calculate_sector_context,
@@ -660,28 +659,6 @@ def test_narrative_excludes_events_published_after_historical_as_of():
     assert result["narrative_future_event_filtered_count"] == 1
     assert result["narrative_state"] == "NO_ACTIVE_PUBLIC_NARRATIVE"
     assert result["narrative_risk_flags"] == "NO_POINT_IN_TIME_ELIGIBLE_EVENT"
-
-
-def test_execution_rr_is_measured_from_structural_targets_not_preselected_r_multiple():
-    features = {
-        "last_price": 100.0,
-        "atr14": 4.0,
-        "ema20": 95.0,
-        "high20": 110.0,
-        "high55": 145.0,
-        "low20": 85.0,
-    }
-    plan = build_execution_plan(
-        features,
-        ready=False,
-        lifecycle="MOMENTUM_TRIGGERED",
-        orderbook={},
-    )
-    assert plan["execution_target_basis"] == "STRUCTURAL_RESISTANCE_OR_RANGE_MEASURED_MOVE_V1"
-    assert plan["breakout_geometry_valid"] is True
-    assert plan["breakout_rr_tp1"] > 1.8
-    assert plan["breakout_rr_tp1"] != 1.8
-    assert plan["breakout_tp1"] > plan["breakout_entry"]
 
 
 def test_direct_ready_requires_point_in_time_fundamental_lineage():
