@@ -1505,6 +1505,7 @@ def score_narrative_events(events: pd.DataFrame | None, as_of: Any = None, issue
         "narrative_independent_story_count": 0, "narrative_source_independence_score": np.nan,
         "narrative_syndication_ratio_pct": np.nan, "narrative_contradiction_score": np.nan,
         "narrative_verified_source_count": 0, "narrative_official_source_count": 0,
+        "narrative_future_event_filtered_count": 0,
         "narrative_source_provenance_state": "NO_VERIFIED_SOURCE", "narrative_relevance_filtered_count": 0,
         "conversion_path": "NO_EVIDENCE", "thesis_statement": "Narrative thesis belum memiliki evidence publik yang cukup.",
     }
@@ -1529,6 +1530,21 @@ def score_narrative_events(events: pd.DataFrame | None, as_of: Any = None, issue
     local["published_at"] = pd.to_datetime(local.get("published_at", local.get("event_date")), errors="coerce", utc=True)
     now = pd.Timestamp(as_of) if as_of is not None else pd.Timestamp.now(tz="UTC")
     now = now.tz_localize("UTC") if now.tzinfo is None else now.tz_convert("UTC")
+
+    # Point-in-time contract: evidence cannot exist before it was public.  Historical
+    # replay may pass a table containing events collected after `as_of`; those rows
+    # must be removed rather than receiving age_days=0 / maximum freshness.
+    future_event_mask = local["published_at"].notna() & local["published_at"].gt(now)
+    future_event_filtered_count = int(future_event_mask.sum())
+    if future_event_filtered_count:
+        local = local.loc[~future_event_mask].copy()
+    if local.empty:
+        result = dict(empty)
+        result["narrative_future_event_filtered_count"] = future_event_filtered_count
+        result["narrative_risk_flags"] = "NO_POINT_IN_TIME_ELIGIBLE_EVENT"
+        result["thesis_statement"] = "Tidak ada narrative event yang sudah tersedia pada timestamp keputusan."
+        return result
+
     rows: list[dict[str, Any]] = []
     conversion_hits: set[str] = set()
     relevance_filtered = 0
@@ -1647,6 +1663,7 @@ def score_narrative_events(events: pd.DataFrame | None, as_of: Any = None, issue
         "narrative_syndication_ratio_pct": round(syndication_ratio, 1),
         "narrative_contradiction_score": round(contradiction_score, 1) if np.isfinite(contradiction_score) else np.nan,
         "narrative_verified_source_count": verified_count, "narrative_relevance_filtered_count": relevance_filtered,
+        "narrative_future_event_filtered_count": future_event_filtered_count,
         "narrative_official_source_count": official_count,
         "narrative_source_provenance_state": "VERIFIED_OFFICIAL_SOURCE" if official_count else "VERIFIED_NON_OFFICIAL_SOURCE" if verified_count else "UNVERIFIED_PUBLIC_NEWS_ONLY",
         "narrative_category": top_category, "narrative_latest_title": latest_title,
