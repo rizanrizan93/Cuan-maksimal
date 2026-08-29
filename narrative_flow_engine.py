@@ -2025,7 +2025,29 @@ def build_emir_profile(
         (ownership_score, 0.45, ownership_coverage),
     ])
     structure_score = _finite(features.get("market_structure_score"), np.nan)
-    structure_coverage = 100.0 if np.isfinite(structure_score) else 0.0
+    structure_mode_for_score = str(features.get("market_structure_mode") or "NO_CLEAR_STRUCTURE")
+    # Final-conviction structure must not silently reuse flow/absorption/trend that
+    # already have dedicated pillars.  Keep the richer market_structure_score for
+    # setup gates/lifecycle, but use price-geometry-only evidence in the composite.
+    if structure_mode_for_score == "CONTINUATION_SETUP":
+        structure_alpha_score, structure_coverage = _weighted_fixed([
+            (_finite(features.get("higher_high_score"), np.nan), 0.55, 100.0 if np.isfinite(_finite(features.get("higher_high_score"), np.nan)) else 0.0),
+            (_finite(features.get("higher_low_score"), np.nan), 0.45, 100.0 if np.isfinite(_finite(features.get("higher_low_score"), np.nan)) else 0.0),
+        ])
+    elif structure_mode_for_score == "REVERSAL_SETUP":
+        structure_alpha_score, structure_coverage = _weighted_fixed([
+            (_finite(features.get("fakeout_reclaim_score"), np.nan), 0.55, 100.0 if np.isfinite(_finite(features.get("fakeout_reclaim_score"), np.nan)) else 0.0),
+            (_finite(features.get("higher_low_score"), np.nan), 0.25, 100.0 if np.isfinite(_finite(features.get("higher_low_score"), np.nan)) else 0.0),
+            (_finite(features.get("range_compression_score"), np.nan), 0.20, 100.0 if np.isfinite(_finite(features.get("range_compression_score"), np.nan)) else 0.0),
+        ])
+    elif structure_mode_for_score == "SIDEWAYS_ACCUMULATION":
+        structure_alpha_score, structure_coverage = _weighted_fixed([
+            (_finite(features.get("range_compression_score"), np.nan), 0.60, 100.0 if np.isfinite(_finite(features.get("range_compression_score"), np.nan)) else 0.0),
+            (_finite(features.get("fakeout_reclaim_score"), np.nan), 0.40, 100.0 if np.isfinite(_finite(features.get("fakeout_reclaim_score"), np.nan)) else 0.0),
+        ])
+    else:
+        structure_alpha_score = structure_score
+        structure_coverage = 100.0 if np.isfinite(structure_score) else 0.0
     sector_score = _finite(sector.get("sector_leadership_score"), np.nan)
     sector_coverage = _finite(sector.get("sector_context_coverage_pct"), 0)
     market_score = _finite(market.get("market_context_score"), np.nan)
@@ -2056,7 +2078,7 @@ def build_emir_profile(
         (flow_score, 0.18, flow_coverage),
         (fundamental_conversion, 0.16, fundamental_coverage),
         (narrative_runway_score, 0.14, narrative_runway_coverage),
-        (structure_score, 0.13, structure_coverage),
+        (structure_alpha_score, 0.13, structure_coverage),
         (sector_context_score, 0.10, sector_context_coverage),
         (conversion, 0.08, conversion_coverage),
         (alignment_owner_score, 0.07, alignment_owner_coverage),
@@ -2492,6 +2514,8 @@ def build_emir_profile(
         "deep_review_state": "DEEP_REVIEWED" if deep_reviewed else "RADAR_ONLY",
         "emir_lifecycle": lifecycle,
         "emir_conviction_score": round(conviction, 1) if np.isfinite(conviction) else np.nan,
+        "emir_structure_alpha_score": round(structure_alpha_score, 1) if np.isfinite(structure_alpha_score) else np.nan,
+        "emir_structure_overlap_control_state": "PRICE_GEOMETRY_ONLY_IN_CONVICTION_FLOW_TREND_EXCLUDED_V1",
         "emir_evidence_coverage_pct": round(evidence_coverage, 1),
         "emir_scoring_lineage_state": "DISJOINT_EVIDENCE_PILLARS_V2",
         "emir_overlap_control_state": "FUNDAMENTAL_NOT_REUSED_IN_NARRATIVE_CONVERSION",
