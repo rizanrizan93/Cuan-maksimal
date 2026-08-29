@@ -1132,6 +1132,7 @@ def recalibrate_cached_fundamental_snapshot(payload: Mapping[str, Any] | None) -
 
 def fetch_yfinance_fundamental_snapshot(ticker: str) -> tuple[dict[str, Any], dict[str, Any]]:
     symbol = normalize_ticker(ticker)
+    observed_at = pd.Timestamp.now(tz="UTC")
     if yf is None:
         return {"ticker": symbol, "fundamental_provenance_state": "UNAVAILABLE", "fundamental_coverage_pct": 0.0}, {"ticker": symbol, "provider": "YFINANCE_FUNDAMENTALS", "status": "UNAVAILABLE", "items": 0, "detail": "yfinance unavailable"}
     try:
@@ -1320,7 +1321,9 @@ def fetch_yfinance_fundamental_snapshot(ticker: str) -> tuple[dict[str, Any], di
         latest_period = income_period
         snapshot = {
             "ticker": symbol,
-            "fundamental_cache_schema_version": "4",
+            "fundamental_cache_schema_version": "5",
+            "fundamental_observed_at": observed_at.isoformat(),
+            "fundamental_availability_state": "POINT_IN_TIME_OBSERVED_AT_FETCH",
             "fundamental_latest_period": pd.Timestamp(latest_period).date().isoformat() if pd.notna(latest_period) else "",
             "fundamental_income_period": pd.Timestamp(income_period).date().isoformat() if pd.notna(income_period) else "",
             "fundamental_balance_period": pd.Timestamp(balance_period).date().isoformat() if pd.notna(balance_period) else "",
@@ -1413,6 +1416,16 @@ def reconcile_fundamental_snapshot(proxy: Mapping[str, Any] | None, official: Ma
 
     result = dict(base)
     result["ticker"] = ticker
+
+    proxy_observed = pd.to_datetime(base.get("fundamental_observed_at"), errors="coerce", utc=True)
+    official_observed = pd.to_datetime(off.get("idx_official_observed_at"), errors="coerce", utc=True)
+    observed_candidates = [value for value in (proxy_observed, official_observed) if pd.notna(value)]
+    if observed_candidates:
+        result["fundamental_observed_at"] = max(observed_candidates).isoformat()
+        result["fundamental_availability_state"] = "POINT_IN_TIME_OBSERVED"
+    else:
+        result["fundamental_availability_state"] = "AVAILABILITY_TIMESTAMP_UNVERIFIED"
+
     off_period = pd.to_datetime(off.get("idx_official_period_end"), errors="coerce")
     proxy_period = pd.to_datetime(base.get("fundamental_latest_period"), errors="coerce")
     period_ok = pd.notna(off_period) and (pd.isna(proxy_period) or off_period >= proxy_period - pd.to_timedelta(45, unit="D"))
