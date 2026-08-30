@@ -197,7 +197,9 @@ def _row_fallback_cost_basis(row: Mapping[str, Any]) -> dict[str, Any]:
 
 def enrich_dashboard_scores(radar: pd.DataFrame, frames: Mapping[str, pd.DataFrame] | None = None) -> pd.DataFrame:
     frames = frames or {}
-    local = _legacy.enrich_dashboard_scores(radar, frames)
+    # Runtime compatibility installers may replace the public legacy wrapper.
+    # Decision calculation always uses the stable on-disk implementation.
+    local = _legacy._canonical_enrich_dashboard_scores(radar, frames)
     if local.empty:
         return local
     rows = []
@@ -216,6 +218,12 @@ def enrich_dashboard_scores(radar: pd.DataFrame, frames: Mapping[str, pd.DataFra
     for column in extra.columns:
         local[column] = extra[column]
     return local
+
+
+# Stable implementation handle used by the explicit final-decision pipeline.
+# Runtime compatibility patches may replace ``enrich_dashboard_scores`` but do
+# not alter this canonical calculation function.
+_canonical_enrich_dashboard_scores = enrich_dashboard_scores
 
 
 def _fmt_rupiah(value: Any) -> str:

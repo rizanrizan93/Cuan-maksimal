@@ -16,6 +16,7 @@ SCANNER_RELEASE_VERSION, RUNTIME_RELOADED_MODULES = refresh_release_runtime(
         "future_fundamental",
         "top3_dashboard_legacy",
         "top3_dashboard",
+        "final_decision",
         "scan_jobs",
         "resumable_scan",
     ),
@@ -24,6 +25,7 @@ SCANNER_RELEASE_VERSION, RUNTIME_RELOADED_MODULES = refresh_release_runtime(
         "narrative_flow_engine": "ENGINE_VERSION",
         "future_fundamental": "SCANNER_VERSION",
         "top3_dashboard": "SCANNER_VERSION",
+        "final_decision": "SCANNER_VERSION",
         "scan_jobs": "JOB_VERSION",
         "resumable_scan": "PIPELINE_VERSION",
     },
@@ -72,10 +74,8 @@ from scan_jobs import (
     job_status_frame, universe_hash,
 )
 from resumable_scan import load_persisted_scan_result, process_next_job_step
-from top3_dashboard import (
-    SMART_MONEY_COST_BASIS_VERSION, enrich_dashboard_scores, render_top3_dashboard_html,
-    select_top3, select_next_leaders, select_real_money_top3,
-)
+import final_decision as decision_contract
+from top3_dashboard import SMART_MONEY_COST_BASIS_VERSION
 from dashboard_persistence import build_database_transfer_summary, database_transfer_totals
 from persistent_cache import (
     cache_commit_succeeded,
@@ -687,10 +687,10 @@ elif persistence_state == "SCAN_COMPLETED_PARTIAL_PERSISTENCE":
     st.warning("SCAN_COMPLETED_PARTIAL_PERSISTENCE · hasil scan tetap diterbitkan; sebagian data database akan dicari ulang pada scan berikutnya.")
 else:
     st.warning("SCAN_COMPLETED_MEMORY_ONLY · hasil tersedia untuk sesi ini; data yang tidak ada di database akan diambil ulang dari provider.")
-radar = enrich_dashboard_scores(result["radar"], result.get("frames", {}))
-top3 = select_top3(radar, limit=3)
-next_leaders = select_next_leaders(radar, limit=20)
-real_money_top3 = select_real_money_top3(radar, limit=3)
+radar = decision_contract.finalize_decision_snapshot(result["radar"], result.get("frames", {}))
+top3 = decision_contract.select_top3(radar, limit=3)
+next_leaders = decision_contract.select_next_leaders(radar, limit=20)
+real_money_top3 = decision_contract.select_real_money_top3(radar, limit=3)
 deep_reviewed_count = int(radar["deep_review_state"].eq("DEEP_REVIEWED").sum())
 deep_target_count = len(result.get("shortlist") or [])
 deep_scope = str(result.get("deep_review_scope") or "ALL_ELIGIBLE")
@@ -780,7 +780,7 @@ with tab_top3:
     if top3.empty:
         st.warning("Belum ada kandidat yang layak masuk Top 3. Scanner tidak memaksakan saham reject atau data-integrity block.")
     else:
-        top3_html = render_top3_dashboard_html(
+        top3_html = decision_contract.render_top3_dashboard_html(
             top3,
             scan_id=str(result.get("scan_id", "")),
             as_of=result.get("as_of", ""),

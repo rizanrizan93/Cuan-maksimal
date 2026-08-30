@@ -320,11 +320,12 @@ def _wrap_dashboard_scores(owner: Any) -> None:
 def install() -> dict[str, str]:
     import top3_dashboard_legacy
     import top3_dashboard
+    from final_decision import finalize_decision_snapshot
 
-    # Install before runtime_integrity_patch. The existing ranking-contract wrapper
-    # then remains outermost and ranks the already-ZAPI-confirmed result.
-    _wrap_dashboard_scores(top3_dashboard_legacy)
-    _wrap_dashboard_scores(top3_dashboard)
+    # Backward-compatible dashboard entry points delegate to the explicit P1
+    # pipeline.  Provider overlays are no longer stacked by monkey-patch order.
+    top3_dashboard_legacy.enrich_dashboard_scores = finalize_decision_snapshot
+    top3_dashboard.enrich_dashboard_scores = finalize_decision_snapshot
     return {
         "patch_version": PATCH_VERSION,
         "zapi_version": ZAPI_FLOW_ENRICHMENT_VERSION,

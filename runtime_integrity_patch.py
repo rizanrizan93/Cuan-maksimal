@@ -10,7 +10,7 @@ import time
 
 import pandas as pd
 
-from evidence_governance import ProviderNegativeCache, apply_three_rank_contract
+from evidence_governance import ProviderNegativeCache
 from live_forward_evidence import collect_live_forward_evidence
 
 PATCH_VERSION = "1.1.0-live-forward"
@@ -131,10 +131,12 @@ def _wrap_dashboard_scores(module: Any) -> None:
     @wraps(original)
     def wrapped(*args: Any, **kwargs: Any):
         out = original(*args, **kwargs)
-        if isinstance(out, pd.DataFrame) and not out.empty:
-            out = apply_three_rank_contract(out)
-            out["ranking_contract_version"] = PATCH_VERSION
-        return out
+        if not isinstance(out, pd.DataFrame) or out.empty:
+            return out
+        import final_decision
+        if final_decision.is_final_decision_snapshot(out):
+            return out.copy(deep=True)
+        return final_decision.finalize_decision_snapshot(out)
 
     wrapped.__three_rank_contract_v1__ = True
     setattr(module, "enrich_dashboard_scores", wrapped)

@@ -23,6 +23,63 @@ ZAPI_FOREIGN_FLOW_URL = "https://api.zpi.web.id/v1/finance:idx/foreign-flow"
 ZAPI_STOCK_SUMMARY_URL = "https://api.zpi.web.id/v1/finance:idx/stock-summary"
 SHARED_CACHE_URL = "https://raw.githubusercontent.com/rizanrizan93/idx-flow-scanner/main/data/cache/zapi_idx_foreign_60d.csv.gz"
 
+_ZAPI_BASE_COLUMNS = frozenset({
+    "zapi_base_smart_money_score",
+    "zapi_base_smart_money_coverage_pct",
+    "zapi_base_emir_conviction_score",
+})
+_ZAPI_LEGACY_APPLIED_MARKERS = frozenset({
+    "zapi_emir_conviction_delta",
+    "zapi_smart_money_confirmation_weight_pct",
+    "zapi_emir_flow_basis",
+})
+
+
+def _zapi_row_has_value(row: Mapping[str, Any], column: str) -> bool:
+    value = row.get(column)
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    try:
+        return not bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return True
+
+
+def _classify_zapi_enrichment_row(row: Mapping[str, Any]) -> str:
+    """Resolve ZAPI lineage from values carried by one decision row only."""
+    explicit_value = row.get("zapi_enrichment_compatibility_state")
+    explicit = str(explicit_value).strip().upper() if _zapi_row_has_value(row, "zapi_enrichment_compatibility_state") else ""
+    base_count = sum(_zapi_row_has_value(row, column) for column in _ZAPI_BASE_COLUMNS)
+    marker_present = any(_zapi_row_has_value(row, column) for column in _ZAPI_LEGACY_APPLIED_MARKERS)
+    if explicit.startswith("LEGACY_ALREADY_ENRICHED"):
+        return "LEGACY_ALREADY_ENRICHED"
+    if explicit.startswith("AMBIGUOUS_LEGACY"):
+        return "AMBIGUOUS_LEGACY"
+    if explicit.startswith("CANONICAL_ENRICHED") and base_count != len(_ZAPI_BASE_COLUMNS):
+        return "AMBIGUOUS_LEGACY"
+    if explicit.startswith("PRISTINE_BASE"):
+        return "AMBIGUOUS_LEGACY" if marker_present or 0 < base_count < len(_ZAPI_BASE_COLUMNS) else "PRISTINE_BASE"
+    if base_count == len(_ZAPI_BASE_COLUMNS):
+        return "CANONICAL_ENRICHED"
+    if 0 < base_count < len(_ZAPI_BASE_COLUMNS):
+        return "AMBIGUOUS_LEGACY"
+    if marker_present:
+        return "LEGACY_ALREADY_ENRICHED"
+    return "PRISTINE_BASE"
+
+
+def classify_zapi_enrichment_state(frame: pd.DataFrame) -> str:
+    """Return one compatible scalar state; mixed frames aggregate fail-closed."""
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return "PRISTINE_BASE"
+    states = frame.apply(lambda row: _classify_zapi_enrichment_row(row), axis=1)
+    unique = states.dropna().unique().tolist()
+    return unique[0] if len(unique) == 1 else "AMBIGUOUS_LEGACY"
+
 _HISTORY_CACHE: dict[str, tuple[float, pd.DataFrame, dict[str, Any]]] = {}
 _FEATURE_CACHE: dict[tuple[str, ...], tuple[float, pd.DataFrame, dict[str, Any]]] = {}
 
@@ -427,25 +484,58 @@ def enrich_super_universe(universe: pd.DataFrame) -> pd.DataFrame:
 def enrich_emir_radar(radar: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(radar, pd.DataFrame) or radar.empty or "ticker" not in radar.columns:
         return radar.copy() if isinstance(radar, pd.DataFrame) else pd.DataFrame()
-    features, _ = get_zapi_features(radar["ticker"].tolist())
-    out = _merge_features(radar, features)
+    working = radar.copy(deep=True)
+    order_column = "__zapi_enrichment_row_order__"
+    while order_column in working.columns:
+        order_column += "_"
+    working[order_column] = np.arange(len(working))
+    states = working.apply(lambda row: _classify_zapi_enrichment_row(row), axis=1)
+    enrichable = states.eq("PRISTINE_BASE")
+    protected = working.loc[~enrichable].copy()
+    if not protected.empty:
+        protected["zapi_enrichment_compatibility_state"] = states.loc[~enrichable].map({
+            "CANONICAL_ENRICHED": "CANONICAL_ENRICHED",
+            "LEGACY_ALREADY_ENRICHED": "LEGACY_ALREADY_ENRICHED_PRESERVED_NO_REAPPLY",
+            "AMBIGUOUS_LEGACY": "AMBIGUOUS_LEGACY_PRESERVED_NO_REAPPLY",
+        })
+    if not enrichable.any():
+        return protected.sort_values(order_column, kind="stable").drop(columns=[order_column]).reset_index(drop=True)
+
+    enrichable_rows = working.loc[enrichable].copy()
+    features, _ = get_zapi_features(enrichable_rows["ticker"].tolist())
+    out = _merge_features(enrichable_rows, features)
     if out.empty:
         return out
+    # Preserve the pre-ZAPI inputs so this overlay is a pure derivation rather
+    # than an additive mutation.  These columns survive persistence and make a
+    # reload/re-render decision-equivalent to the first enrichment pass.
+    base_columns = {
+        "zapi_base_smart_money_score": "smart_money_score",
+        "zapi_base_smart_money_coverage_pct": "smart_money_coverage_pct",
+        "zapi_base_emir_conviction_score": "emir_conviction_score",
+    }
+    for base_column, source_column in base_columns.items():
+        source = out.get(source_column, pd.Series(np.nan, index=out.index))
+        if base_column not in out.columns:
+            out[base_column] = source
+        else:
+            present = out.apply(lambda row: _zapi_row_has_value(row, base_column), axis=1)
+            out.loc[~present, base_column] = source.loc[~present]
     smart_values: list[float] = []
     smart_coverages: list[float] = []
     smart_weights: list[float] = []
     adjusted_conviction: list[float] = []
     deltas: list[float] = []
     for _, row in out.iterrows():
-        smart = _first_num(row, ("smart_money_score",))
-        smart_cov = _first_num(row, ("smart_money_coverage_pct",))
+        smart = _first_num(row, ("zapi_base_smart_money_score",))
+        smart_cov = _first_num(row, ("zapi_base_smart_money_coverage_pct",))
         zapi_smart = _first_num(row, ("zapi_smart_money_confirmation_score",))
         zapi_cov = _first_num(row, ("zapi_foreign_flow_coverage_pct",))
         blended_smart, blended_cov, weight_pct = _blend(smart, smart_cov, zapi_smart, zapi_cov, max_weight=0.30)
         smart_values.append(blended_smart)
         smart_coverages.append(blended_cov)
         smart_weights.append(weight_pct)
-        conviction = _first_num(row, ("emir_conviction_score", "emir_final_score"))
+        conviction = _first_num(row, ("zapi_base_emir_conviction_score", "emir_final_score"))
         flow_score = _first_num(row, ("zapi_foreign_flow_score",))
         if np.isfinite(conviction) and np.isfinite(flow_score) and np.isfinite(zapi_cov) and zapi_cov > 0:
             directional = float(np.clip((flow_score - 50.0) / 50.0, -1.0, 1.0))
@@ -465,13 +555,21 @@ def enrich_emir_radar(radar: pd.DataFrame) -> pd.DataFrame:
     if "emir_final_score" in out.columns:
         out["emir_final_score"] = adjusted_conviction
     out["zapi_emir_flow_basis"] = "EXISTING_EMIR_FLOW_PLUS_BOUNDED_ZAPI_FOREIGN_CONFIRMATION"
-    return out
+    out["zapi_enrichment_compatibility_state"] = "CANONICAL_ENRICHED"
+    combined = pd.concat([out, protected], ignore_index=True, sort=False)
+    return combined.sort_values(order_column, kind="stable").drop(columns=[order_column]).reset_index(drop=True)
 
 
 def blend_emir_dashboard_output(frame: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(frame, pd.DataFrame) or frame.empty:
         return frame.copy() if isinstance(frame, pd.DataFrame) else pd.DataFrame()
     out = frame.copy()
+    for base_column, source_column in {
+        "zapi_base_dashboard_flow_score": "dashboard_flow_score",
+        "zapi_base_dashboard_silent_accum_score": "dashboard_silent_accum_score",
+    }.items():
+        if base_column not in out.columns:
+            out[base_column] = out.get(source_column, pd.Series(np.nan, index=out.index))
     flow_values: list[float] = []
     silent_values: list[float] = []
     dominance_values: list[float] = []
@@ -479,8 +577,8 @@ def blend_emir_dashboard_output(frame: pd.DataFrame) -> pd.DataFrame:
         zapi = _first_num(row, ("zapi_foreign_flow_score",))
         zapi_acc = _first_num(row, ("zapi_accumulation_confirmation_score",))
         cov = _first_num(row, ("zapi_foreign_flow_coverage_pct",))
-        base_flow = _first_num(row, ("dashboard_flow_score",))
-        base_silent = _first_num(row, ("dashboard_silent_accum_score",))
+        base_flow = _first_num(row, ("zapi_base_dashboard_flow_score",))
+        base_silent = _first_num(row, ("zapi_base_dashboard_silent_accum_score",))
         flow, _, _ = _blend(base_flow, 100.0 if np.isfinite(base_flow) else 0.0, zapi, cov, max_weight=0.30)
         silent, _, _ = _blend(base_silent, 100.0 if np.isfinite(base_silent) else 0.0, zapi_acc, cov, max_weight=0.20)
         distribution = _first_num(row, ("distribution_score",))
@@ -501,4 +599,4 @@ def blend_emir_dashboard_output(frame: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-__all__ = ["ZAPI_FLOW_ENRICHMENT_VERSION", "score_foreign_history", "get_zapi_features", "enrich_super_universe", "enrich_emir_radar", "blend_emir_dashboard_output"]
+__all__ = ["ZAPI_FLOW_ENRICHMENT_VERSION", "score_foreign_history", "get_zapi_features", "enrich_super_universe", "enrich_emir_radar", "blend_emir_dashboard_output", "classify_zapi_enrichment_state"]

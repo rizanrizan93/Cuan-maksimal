@@ -41,6 +41,17 @@ def _numeric(frame: pd.DataFrame, column: str, default: float = np.nan) -> pd.Se
 def _ensure_rank_contract(frame: pd.DataFrame) -> pd.DataFrame:
     if frame is None or frame.empty:
         return frame.copy() if isinstance(frame, pd.DataFrame) else pd.DataFrame()
+    frozen = (
+        "decision_snapshot_state" in frame.columns
+        and frame["decision_snapshot_state"].eq("FINAL_DECISION_FROZEN").all()
+        and {
+            "raw_research_rank",
+            "guarded_decision_priority_rank",
+            "production_real_money_rank",
+        }.issubset(frame.columns)
+    )
+    if frozen:
+        return frame.copy(deep=True)
     # Recompute even when persisted rank columns exist. A stale broad production
     # rank must never bypass the current fail-closed authorization contract.
     return apply_three_rank_contract(frame)

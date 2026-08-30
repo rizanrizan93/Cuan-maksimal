@@ -61,7 +61,7 @@ from future_fundamental import calculate_future_fundamental, future_fundamental_
 from persistent_direct_evidence import load_verified_direct_evidence
 from free_tier_storage import prune_scan_history_best_effort, run_outcome_maintenance_best_effort
 
-from top3_dashboard import enrich_dashboard_scores, select_top3, select_next_leaders
+import final_decision as decision_contract
 from scan_jobs import (
     get_scan_job,
     load_job_chunks,
@@ -1172,12 +1172,12 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
 
     # Persist dashboard factor scores and the derived Top 3 summary with the scan.
     # This makes a reloaded database result visually equivalent to the original session.
-    radar = enrich_dashboard_scores(radar, frames)
+    radar = decision_contract.finalize_decision_snapshot(radar, frames)
     future_ff_evidence = future_fundamental_evidence_frame(radar, observed_at=now)
     if not future_ff_evidence.empty:
         autonomous_evidence = pd.concat([autonomous_evidence, future_ff_evidence], ignore_index=True, sort=False) if not autonomous_evidence.empty else future_ff_evidence
-    top3 = select_top3(radar, limit=3)
-    next_leaders = select_next_leaders(radar, limit=20)
+    top3 = decision_contract.select_top3(radar, limit=3)
+    next_leaders = decision_contract.select_next_leaders(radar, limit=20)
     top3_summary = [
         {
             "rank": int(index + 1),

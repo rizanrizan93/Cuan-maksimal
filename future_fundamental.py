@@ -152,12 +152,15 @@ def _event_bucket(events: pd.DataFrame | None, terms: tuple[str, ...], as_of: An
 
 def _forward_event_stats(events: pd.DataFrame | None, as_of: Any = None) -> dict[str, Any]:
     if not isinstance(events, pd.DataFrame) or events.empty:
-        return {"count": 0, "verified": 0, "official": 0, "latest_days": np.nan}
+        return {
+            "count": 0, "verified": 0, "official": 0, "public_research": 0,
+            "inferred": 0, "provenance": "MISSING", "latest_days": np.nan,
+        }
     now = pd.Timestamp.now(tz="UTC") if as_of is None else pd.Timestamp(as_of)
     now = now.tz_localize("UTC") if now.tzinfo is None else now.tz_convert("UTC")
     terms = PROJECT_TERMS + CAPEX_TERMS + CONTRACT_TERMS + GUIDANCE_TERMS
     seen: set[tuple[str, str, str]] = set()
-    verified = official = 0
+    verified = official = public_research = inferred = 0
     ages: list[float] = []
     for _, series in events.iterrows():
         row = series.to_dict()
@@ -176,9 +179,32 @@ def _forward_event_stats(events: pd.DataFrame | None, as_of: Any = None) -> dict
         is_official = bool(is_verified and tier in {"OFFICIAL", "ISSUER", "REGULATOR"})
         verified += int(is_verified)
         official += int(is_official)
+        if not is_verified:
+            is_public_research = bool(
+                tier == "PUBLIC_RESEARCH"
+                or _truthy(row.get("forward_research_only"))
+                or str(row.get("url") or row.get("source_url") or "").strip()
+            )
+            public_research += int(is_public_research)
+            inferred += int(not is_public_research)
         if pd.notna(published):
             ages.append(max(0.0, (now - published).total_seconds() / 86400.0))
-    return {"count": len(seen), "verified": verified, "official": official, "latest_days": min(ages) if ages else np.nan}
+    provenance = (
+        "DIRECT_OR_OFFICIAL" if official > 0
+        else "VERIFIED" if verified > 0
+        else "PUBLIC_RESEARCH" if public_research > 0
+        else "INFERRED" if inferred > 0
+        else "MISSING"
+    )
+    return {
+        "count": len(seen),
+        "verified": verified,
+        "official": official,
+        "public_research": public_research,
+        "inferred": inferred,
+        "provenance": provenance,
+        "latest_days": min(ages) if ages else np.nan,
+    }
 
 
 def _funding_capacity(fundamental: Mapping[str, Any]) -> tuple[float, float, list[str]]:
@@ -325,6 +351,9 @@ def calculate_future_fundamental(
     forward_event_count = int(forward_stats["count"])
     verified_forward_count = int(forward_stats["verified"])
     official_forward_count = int(forward_stats["official"])
+    public_research_forward_count = int(forward_stats["public_research"])
+    inferred_forward_count = int(forward_stats["inferred"])
+    forward_provenance = str(forward_stats["provenance"])
     flags: list[str] = [*funding_flags, *confirmation_flags]
 
     # Missing or unverified forward evidence is a confidence problem, not a reason
@@ -390,6 +419,12 @@ def calculate_future_fundamental(
         "future_forward_event_count": forward_event_count,
         "future_verified_forward_event_count": verified_forward_count,
         "future_official_forward_event_count": official_forward_count,
+        "future_public_research_forward_event_count": public_research_forward_count,
+        "future_inferred_forward_event_count": inferred_forward_count,
+        "future_forward_provenance_state": forward_provenance,
+        # Strong public research remains rank-visible but cannot be normalized
+        # or aggregated into direct/official authorization evidence.
+        "future_direct_forward_authorization_eligible": bool(official_forward_count > 0),
         "future_latest_forward_event_age_days": round(float(latest_forward_age), 1) if np.isfinite(latest_forward_age) else np.nan,
         "future_fundamental_horizon_state": horizon,
         "future_fundamental_drivers": " | ".join(drivers) or "NO_FORWARD_DRIVER_CONFIRMED",

@@ -87,9 +87,12 @@ def _wrap(owner: Any) -> None:
 def install() -> dict[str, str]:
     import top3_dashboard_legacy
     import top3_dashboard
+    from final_decision import finalize_decision_snapshot
     _install_canonical_cache_bridge()
-    _wrap(top3_dashboard_legacy)
-    _wrap(top3_dashboard)
+    # Keep historical names callable while routing all decision calculation to
+    # the same explicit enrich/finalize/rank/freeze implementation.
+    top3_dashboard_legacy.enrich_dashboard_scores = finalize_decision_snapshot
+    top3_dashboard.enrich_dashboard_scores = finalize_decision_snapshot
     return {
         "patch_version": PATCH_VERSION,
         "broker_flow_version": VERSION,

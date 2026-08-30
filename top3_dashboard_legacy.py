@@ -869,3 +869,7 @@ __all__ = [
     "recommendation_meta",
     "render_top3_dashboard_html",
 ]
+
+# Stable implementation handle for the P1 final-decision pipeline.  Runtime
+# wrappers remain backward compatible without becoming calculation authority.
+_canonical_enrich_dashboard_scores = enrich_dashboard_scores

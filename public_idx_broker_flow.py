@@ -14,6 +14,64 @@ PUBLIC_CACHE_URL = "https://raw.githubusercontent.com/rizanrizan93/pasticuan/mai
 VERSION = "1.0.0-public-idx-participant-cache-consumer"
 SOURCE_NAME = "IDX_PUBLIC_TRADE_DETAIL_PUBLIK"
 
+_BROKER_BASE_COLUMNS = frozenset({
+    "broker_base_smart_money_score",
+    "broker_base_emir_conviction_score",
+    "broker_base_emir_final_score",
+})
+_BROKER_LEGACY_APPLIED_MARKERS = frozenset({
+    "broker_emir_conviction_delta",
+    "broker_confirmation_weight_pct",
+    "broker_pre_confirmation_smart_money_score",
+    "broker_post_confirmation_smart_money_score",
+})
+
+
+def _broker_row_has_value(row: Any, column: str) -> bool:
+    value = row.get(column)
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    try:
+        return not bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return True
+
+
+def _classify_broker_enrichment_row(row: Any) -> str:
+    """Resolve broker lineage from values carried by one decision row only."""
+    explicit_value = row.get("broker_enrichment_compatibility_state")
+    explicit = str(explicit_value).strip().upper() if _broker_row_has_value(row, "broker_enrichment_compatibility_state") else ""
+    base_count = sum(_broker_row_has_value(row, column) for column in _BROKER_BASE_COLUMNS)
+    marker_present = any(_broker_row_has_value(row, column) for column in _BROKER_LEGACY_APPLIED_MARKERS)
+    if explicit.startswith("LEGACY_ALREADY_ENRICHED"):
+        return "LEGACY_ALREADY_ENRICHED"
+    if explicit.startswith("AMBIGUOUS_LEGACY"):
+        return "AMBIGUOUS_LEGACY"
+    if explicit.startswith("CANONICAL_ENRICHED") and base_count != len(_BROKER_BASE_COLUMNS):
+        return "AMBIGUOUS_LEGACY"
+    if explicit.startswith("PRISTINE_BASE"):
+        return "AMBIGUOUS_LEGACY" if marker_present or 0 < base_count < len(_BROKER_BASE_COLUMNS) else "PRISTINE_BASE"
+    if base_count == len(_BROKER_BASE_COLUMNS):
+        return "CANONICAL_ENRICHED"
+    if 0 < base_count < len(_BROKER_BASE_COLUMNS):
+        return "AMBIGUOUS_LEGACY"
+    if marker_present:
+        return "LEGACY_ALREADY_ENRICHED"
+    return "PRISTINE_BASE"
+
+
+def classify_broker_enrichment_state(frame: pd.DataFrame) -> str:
+    """Return one compatible scalar state; mixed frames aggregate fail-closed."""
+    if not isinstance(frame, pd.DataFrame) or frame.empty:
+        return "PRISTINE_BASE"
+    states = frame.apply(lambda row: _classify_broker_enrichment_row(row), axis=1)
+    unique = states.dropna().unique().tolist()
+    return unique[0] if len(unique) == 1 else "AMBIGUOUS_LEGACY"
+
 
 def _canon(value: Any) -> str:
     text = str(value or "").strip().upper()
@@ -124,11 +182,41 @@ def _merge(frame: pd.DataFrame, features: pd.DataFrame) -> pd.DataFrame:
 def enrich_emir_broker(frame: pd.DataFrame) -> pd.DataFrame:
     if not isinstance(frame, pd.DataFrame) or frame.empty or "ticker" not in frame.columns:
         return frame.copy() if isinstance(frame, pd.DataFrame) else pd.DataFrame()
-    features = score_broker_history(load_public_cache(), frame["ticker"].tolist())
+    working = frame.copy(deep=True)
+    order_column = "__broker_enrichment_row_order__"
+    while order_column in working.columns:
+        order_column += "_"
+    working[order_column] = np.arange(len(working))
+    states = working.apply(lambda row: _classify_broker_enrichment_row(row), axis=1)
+    enrichable = states.eq("PRISTINE_BASE")
+    protected = working.loc[~enrichable].copy()
+    if not protected.empty:
+        protected["broker_enrichment_compatibility_state"] = states.loc[~enrichable].map({
+            "CANONICAL_ENRICHED": "CANONICAL_ENRICHED",
+            "LEGACY_ALREADY_ENRICHED": "LEGACY_ALREADY_ENRICHED_PRESERVED_NO_REAPPLY",
+            "AMBIGUOUS_LEGACY": "AMBIGUOUS_LEGACY_PRESERVED_NO_REAPPLY",
+        })
+    if not enrichable.any():
+        return protected.sort_values(order_column, kind="stable").drop(columns=[order_column]).reset_index(drop=True)
+
+    enrichable_rows = working.loc[enrichable].copy()
+    features = score_broker_history(load_public_cache(), enrichable_rows["ticker"].tolist())
     if features.empty:
-        return frame.copy()
-    out = _merge(frame, features)
-    base = pd.to_numeric(out.get("smart_money_score", pd.Series(np.nan, index=out.index)), errors="coerce")
+        combined = pd.concat([enrichable_rows, protected], ignore_index=True, sort=False)
+        return combined.sort_values(order_column, kind="stable").drop(columns=[order_column]).reset_index(drop=True)
+    out = _merge(enrichable_rows, features)
+    for base_column, source_column in {
+        "broker_base_smart_money_score": "smart_money_score",
+        "broker_base_emir_conviction_score": "emir_conviction_score",
+        "broker_base_emir_final_score": "emir_final_score",
+    }.items():
+        source = out.get(source_column, pd.Series(np.nan, index=out.index))
+        if base_column not in out.columns:
+            out[base_column] = source
+        else:
+            present = out.apply(lambda row: _broker_row_has_value(row, base_column), axis=1)
+            out.loc[~present, base_column] = source.loc[~present]
+    base = pd.to_numeric(out["broker_base_smart_money_score"], errors="coerce")
     broker = pd.to_numeric(out.get("broker_smart_money_confirmation_score"), errors="coerce")
     coverage = pd.to_numeric(out.get("broker_flow_coverage_pct"), errors="coerce").clip(0, 100)
     weight = 0.20 * coverage.fillna(0) / 100.0
@@ -140,10 +228,12 @@ def enrich_emir_broker(frame: pd.DataFrame) -> pd.DataFrame:
     delta = (1.5 * ((broker.fillna(50) - 50) / 50).clip(-1, 1) * coverage.fillna(0) / 100).clip(-1.5, 1.5)
     if "emir_conviction_score" in out.columns:
         out["broker_emir_conviction_delta"] = delta.round(3)
-        out["emir_conviction_score"] = (pd.to_numeric(out["emir_conviction_score"], errors="coerce") + delta).clip(0, 100).round(3)
+        out["emir_conviction_score"] = (pd.to_numeric(out["broker_base_emir_conviction_score"], errors="coerce") + delta).clip(0, 100).round(3)
     if "emir_final_score" in out.columns:
-        out["emir_final_score"] = (pd.to_numeric(out["emir_final_score"], errors="coerce") + delta).clip(0, 100).round(3)
-    return out
+        out["emir_final_score"] = (pd.to_numeric(out["broker_base_emir_final_score"], errors="coerce") + delta).clip(0, 100).round(3)
+    out["broker_enrichment_compatibility_state"] = "CANONICAL_ENRICHED"
+    combined = pd.concat([out, protected], ignore_index=True, sort=False)
+    return combined.sort_values(order_column, kind="stable").drop(columns=[order_column]).reset_index(drop=True)
 
 
-__all__ = ["PUBLIC_CACHE_URL", "load_public_cache", "score_broker_history", "enrich_emir_broker"]
+__all__ = ["PUBLIC_CACHE_URL", "load_public_cache", "score_broker_history", "classify_broker_enrichment_state", "enrich_emir_broker"]
