@@ -124,10 +124,19 @@ def strong_fundamental():
         "fundamental_conversion_score": 78.0,
         "fundamental_coverage_pct": 85.0,
         "fundamental_data_quality_score": 85.0,
+        "fundamental_official_source_coverage_pct": 85.0,
         "fundamental_state": "FUTURE_FUNDAMENTAL_SUPPORTIVE",
         "fundamental_provenance_state": "VERIFIED_TEST_FIXTURE",
         "fundamental_observed_at": "2026-01-01T00:00:00Z",
         "fundamental_availability_state": "POINT_IN_TIME_OBSERVED",
+        "fundamental_cashflow_state": "IDX_OFFICIAL_YTD_OCF_FCF_AVAILABLE",
+        "fundamental_cashflow_quality_state": "CASHFLOW_POSITIVE_CONVERTING",
+        "operating_cash_flow_ttm": 220.0,
+        "free_cash_flow_proxy_ttm": 170.0,
+        "ocf_conversion_ratio": 0.82,
+        "fundamental_period_freshness_state": "CURRENT_QUARTERLY_PERIOD",
+        "fundamental_growth_consistency_state": "QUARTER_AND_YTD_CONFIRMED",
+        "fundamental_leverage_risk_state": "BALANCE_SHEET_CAPACITY_OK",
     }
 
 

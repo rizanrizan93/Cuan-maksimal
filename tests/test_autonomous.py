@@ -159,7 +159,7 @@ def test_auto_eod_ready_is_capped_and_not_precise():
         deep_reviewed=True,
     )
     assert profile["emir_decision_state"] == "EMIR_AUTO_EOD_READY"
-    assert profile["production_tier"] == "NOT_READY"
+    assert profile["production_tier"] == "MANUAL_CONFIRMATION_REQUIRED"
     assert profile["production_ready"] is False
     assert 0 < profile["position_cap_pct"] <= 8
     assert profile["execution_state"] == "AUTO_EOD_PROXY_TRIGGER_READY"
