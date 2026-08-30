@@ -88,6 +88,7 @@ from persistent_cache import (
     load_cached_ohlcv_frames,
     persist_verify_cache_bundle,
 )
+from checkpoint_ui import checkpoint_execution_state
 
 from persistence import SCANNER_VERSION as PERSISTENCE_SCANNER_VERSION
 from future_fundamental import SCANNER_VERSION as FUTURE_FUNDAMENTAL_SCANNER_VERSION
@@ -615,6 +616,13 @@ if auto_clicked:
 if active_job:
     st.subheader("Resumable scan job")
     safe_dataframe(job_status_frame(active_job), width="stretch", hide_index=True)
+    execution_state = checkpoint_execution_state(
+        active_job.get("status"),
+        auto_continue=bool(st.session_state.get("emir_auto_continue", False)),
+        checkpoint_in_progress=bool(resume_clicked),
+    )
+    if execution_state == "RUNNING (persisted) / WAITING_FOR_CONTINUE":
+        st.info(execution_state)
     progress_value = float(active_job.get("progress_pct") or 0.0)
     st.progress(min(100, max(0, int(progress_value))), text=f"{active_job.get('current_stage')} · {progress_value:.1f}%")
     job_shortlist = list(active_job.get("shortlist") or [])
