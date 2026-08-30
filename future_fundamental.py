@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from release_contract import SCANNER_RELEASE_VERSION
+from provider_semantics import normalize_provenance
 
 FUTURE_FUNDAMENTAL_VERSION = "1.0.3-direct-forward-lineage"
 SCANNER_VERSION = SCANNER_RELEASE_VERSION
@@ -422,6 +423,7 @@ def calculate_future_fundamental(
         "future_public_research_forward_event_count": public_research_forward_count,
         "future_inferred_forward_event_count": inferred_forward_count,
         "future_forward_provenance_state": forward_provenance,
+        "future_canonical_provenance": normalize_provenance(forward_provenance).value,
         # Strong public research remains rank-visible but cannot be normalized
         # or aggregated into direct/official authorization evidence.
         "future_direct_forward_authorization_eligible": bool(official_forward_count > 0),

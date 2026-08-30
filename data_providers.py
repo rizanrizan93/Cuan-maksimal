@@ -16,6 +16,8 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from date_utils import parse_public_date
+from idx_trading_calendar import latest_expected_completed_session, trading_session_age
+from provider_semantics import ProviderStatus, canonicalize_provider_audit
 try:
     import yfinance as yf
 except Exception:  # optional fallback
@@ -560,17 +562,38 @@ def fetch_many_ohlcv(
         else:
             today = today.tz_convert("Asia/Jakarta")
         parsed = pd.to_datetime(audit_frame["last_date"], errors="coerce")
-        audit_frame["data_age_days"] = (today.tz_localize(None).normalize() - parsed).dt.days
+        expected = latest_expected_completed_session(today)
+        audit_frame["data_age_days"] = [
+            trading_session_age(value, expected) if pd.notna(value) else None
+            for value in parsed
+        ]
+        audit_frame["data_age_sessions"] = audit_frame["data_age_days"]
+        future_observation = pd.to_numeric(audit_frame["data_age_sessions"], errors="coerce").lt(0)
+        audit_frame["future_observation"] = future_observation
         audit_frame["completed_session_state"] = np.where(
             audit_frame["status"].eq("OK"),
-            np.where(audit_frame["data_age_days"].fillna(999).le(4), "CURRENT_COMPLETED_SESSION", "STALE_COMPLETED_SESSION"),
+            np.where(
+                future_observation,
+                "INVALID_FUTURE_OBSERVATION",
+                np.where(audit_frame["data_age_days"].fillna(999).le(4), "CURRENT_COMPLETED_SESSION", "STALE_COMPLETED_SESSION"),
+            ),
             "NO_COMPLETED_SESSION",
         )
         audit_frame["quality_state"] = np.where(
             audit_frame["status"].ne("OK"), "PROVIDER_FAILED",
-            np.where(pd.to_numeric(audit_frame["bars"], errors="coerce").fillna(0).lt(220), "INSUFFICIENT_HISTORY",
-                     np.where(audit_frame["data_age_days"].fillna(999).gt(7), "STALE_DATA", "VALID")),
+            np.where(
+                future_observation,
+                "INVALID_FUTURE_OBSERVATION",
+                np.where(pd.to_numeric(audit_frame["bars"], errors="coerce").fillna(0).lt(220), "INSUFFICIENT_HISTORY",
+                         np.where(audit_frame["data_age_days"].fillna(999).gt(7), "STALE_DATA", "VALID")),
+            ),
         )
+    audit_frame = canonicalize_provider_audit(audit_frame)
+    if "future_observation" in audit_frame.columns:
+        audit_frame.loc[
+            audit_frame["future_observation"].fillna(False),
+            "provider_result_status",
+        ] = ProviderStatus.INVALID.value
     return frames, audit_frame.sort_values(["status", "ticker"]).reset_index(drop=True)
 
 
@@ -611,8 +634,8 @@ def assess_benchmark_freshness(benchmark: pd.DataFrame, universe_frames: dict[st
     if pd.isna(benchmark_last):
         state, usable, lag = "BENCHMARK_MISSING", False, None
     else:
-        lag = int(np.busday_count(benchmark_last.date(), reference.date())) if benchmark_last < reference else 0
-        usable = bool(benchmark_last >= reference)
+        lag = trading_session_age(benchmark_last, reference) if benchmark_last < reference else 0
+        usable = bool(lag is not None and benchmark_last >= reference)
         state = "CURRENT_RELATIVE_TO_UNIVERSE" if usable else "STALE_RELATIVE_TO_UNIVERSE"
     return {
         "benchmark_freshness_state": state,

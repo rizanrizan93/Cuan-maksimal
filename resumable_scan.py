@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from release_contract import SCANNER_RELEASE_VERSION
+from provider_semantics import canonicalize_provider_audit
 
 from autonomous_enrichment import (
     apply_regulatory_event_overlay,
@@ -1208,6 +1209,7 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
         ),
         "audit_family": "BENCHMARK_FRESHNESS",
     }])], ignore_index=True, sort=False)
+    provider_audit = canonicalize_provider_audit(provider_audit)
     cache_summary_frame = cache_summary([provider_audit])
 
     research_memory_rows = build_research_memory_rows(scan_id, all_events, autonomous_evidence)

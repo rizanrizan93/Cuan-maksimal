@@ -27,6 +27,7 @@ from idx_official_fundamentals import fetch_many_idx_official_fundamentals
 from data_providers import fetch_many_news
 from research_memory import load_latest_research_memory
 from narrative_flow_engine import MARKET_FEATURE_VERSION
+from idx_trading_calendar import latest_expected_completed_session, trading_session_age
 
 CACHE_VERSION = "1.9.14"
 FUNDAMENTAL_CACHE_SCHEMA_VERSION = "5"
@@ -350,20 +351,7 @@ def _cache_age_hours(row: Mapping[str, Any], now: Any = None) -> float:
 
 
 def _expected_completed_weekday(now: Any = None) -> pd.Timestamp:
-    current = pd.Timestamp(now) if now is not None else pd.Timestamp.now(tz="Asia/Jakarta")
-    if current.tzinfo is None:
-        current = current.tz_localize("Asia/Jakarta")
-    else:
-        current = current.tz_convert("Asia/Jakarta")
-    date = current.tz_localize(None).normalize()
-    after_close = (current.hour, current.minute) >= (16, 20)
-    if current.weekday() < 5 and after_close:
-        target = date
-    else:
-        target = date - pd.to_timedelta(1, unit="D")
-    while target.weekday() >= 5:
-        target -= pd.to_timedelta(1, unit="D")
-    return target
+    return latest_expected_completed_session(now)
 
 
 def _ohlcv_cache_fresh(
@@ -385,6 +373,7 @@ def _ohlcv_cache_fresh(
 
 def _audit_row(ticker: str, provider: str, status: str, frame: pd.DataFrame | None = None, detail: str = "", **extra: Any) -> dict[str, Any]:
     local = frame if isinstance(frame, pd.DataFrame) else pd.DataFrame()
+    age_sessions = trading_session_age(local.index.max(), _expected_completed_weekday()) if not local.empty else None
     return {
         "ticker": normalize_ticker(ticker),
         "provider": provider,
@@ -393,7 +382,8 @@ def _audit_row(ticker: str, provider: str, status: str, frame: pd.DataFrame | No
         "last_date": local.index.max().date().isoformat() if not local.empty else "",
         "detail": detail,
         "recovery_pass": False,
-        "data_age_days": (pd.Timestamp.now(tz="Asia/Jakarta").tz_localize(None).normalize() - local.index.max().normalize()).days if not local.empty else np.nan,
+        "data_age_days": age_sessions,
+        "data_age_sessions": age_sessions,
         "completed_session_state": "CURRENT_COMPLETED_SESSION" if status in {"CACHE_HIT", "INCREMENTAL_REFRESH", "COLD_REFRESH", "STALE_CACHE_FALLBACK"} and not local.empty else "PROVIDER_FAILED",
         "quality_state": "VALID" if status in {"CACHE_HIT", "INCREMENTAL_REFRESH", "COLD_REFRESH"} else "STALE_CACHE" if status == "STALE_CACHE_FALLBACK" else "PROVIDER_FAILED",
         "cache_state": status,
