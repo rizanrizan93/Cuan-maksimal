@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+import idx_public_participant_provider as provider
 import public_idx_broker_flow as broker
 
 
@@ -27,9 +28,24 @@ def test_score_is_bounded_and_identifies_persistent_participant():
     assert row["broker_accumulation_state"] == "PARTICIPANT_ACCUMULATION"
 
 
-def test_consumer_is_fail_soft_without_shared_cache(monkeypatch):
+def test_consumer_is_fail_soft_without_owned_cache(monkeypatch):
     empty_schema = pd.DataFrame(columns=["trade_date", "ticker", "broker_code", "side", "net_value", "net_rank"])
     monkeypatch.setattr(broker, "load_public_cache", lambda: empty_schema)
     frame = pd.DataFrame([{ "ticker": "TEST", "smart_money_score": 60.0 }])
     out = broker.enrich_emir_broker(frame)
     assert float(out.iloc[0]["smart_money_score"]) == 60.0
+
+
+def test_emir_owned_provider_reconstructs_participant_flow(tmp_path):
+    path = tmp_path / "trade.csv"
+    pd.DataFrame([
+        {"asset": "TEST", "participant_buy": "AB", "participant_sell": "CD", "volume": 1000, "value": 1_000_000, "tradingdate": "2026-08-14"},
+        {"asset": "TEST", "participant_buy": "AB", "participant_sell": "EF", "volume": 500, "value": 600_000, "tradingdate": "2026-08-14"},
+        {"asset": "TEST", "participant_buy": "CD", "participant_sell": "AB", "volume": 200, "value": 220_000, "tradingdate": "2026-08-14"},
+    ]).to_csv(path, sep="|", index=False)
+    out = provider.aggregate_trade_detail(path, pd.Timestamp("2026-08-14").date(), ["TEST"])
+    ab = out.loc[out["broker_code"].eq("AB")].iloc[0]
+    assert float(ab["buy_value"]) == 1_600_000
+    assert float(ab["sell_value"]) == 220_000
+    assert float(ab["net_value"]) == 1_380_000
+    assert ab["provenance_state"] == provider.PROVENANCE

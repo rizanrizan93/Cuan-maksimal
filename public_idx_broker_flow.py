@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Consumer for the shared official IDX participant-flow cache."""
+"""Consumer for the Emir-owned official IDX participant-flow cache."""
 
 from io import BytesIO
 import gzip
@@ -10,8 +10,8 @@ import numpy as np
 import pandas as pd
 import requests
 
-PUBLIC_CACHE_URL = "https://raw.githubusercontent.com/rizanrizan93/pasticuan/main/data/public_broker_flow_30d.csv.gz"
-VERSION = "1.0.0-public-idx-participant-cache-consumer"
+PUBLIC_CACHE_URL = "https://raw.githubusercontent.com/rizanrizan93/Cuan-maksimal/main/data/public_broker_flow_30d.csv.gz"
+VERSION = "1.0.1-emir-owned-public-idx-participant-cache"
 SOURCE_NAME = "IDX_PUBLIC_TRADE_DETAIL_PUBLIK"
 
 _BROKER_BASE_COLUMNS = frozenset({

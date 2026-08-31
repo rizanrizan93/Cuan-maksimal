@@ -1,4 +1,4 @@
-name: Emir canonical IDX participant flow verify
+name: Emir-owned IDX participant flow verify
 
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: '3.13'
       - run: pip install pandas requests
-      - name: Verify canonical 400-ticker participant cache
+      - name: Verify Emir-owned participant cache
         run: |
           python - <<'PY'
           from io import BytesIO
@@ -30,22 +30,12 @@ jobs:
           import pandas as pd
           import requests
 
-          cache_url = 'https://raw.githubusercontent.com/rizanrizan93/idx-flow-scanner/main/data/cache/idx_public_participant_30d.csv.gz'
-          meta_url = 'https://raw.githubusercontent.com/rizanrizan93/idx-flow-scanner/main/data/cache/public_participant_meta.json'
-          headers = {'User-Agent':'Emir-Canonical-Participant-Verify/1.1'}
+          cache_url = 'https://raw.githubusercontent.com/rizanrizan93/Cuan-maksimal/main/data/public_broker_flow_30d.csv.gz'
+          headers = {'User-Agent':'Emir-Owned-Participant-Verify/1.0'}
           r = requests.get(cache_url, timeout=20, headers=headers)
-          if r.status_code == 404:
-              meta_response = requests.get(meta_url, timeout=20, headers=headers)
-              meta_response.raise_for_status()
-              meta = meta_response.json()
-              state = str(meta.get('status') or '').upper()
-              if state in {'NO_DATA', 'BLOCKED', 'SOURCE_UNAVAILABLE'} and int(meta.get('cache_rows') or 0) == 0:
-                  print({'participant_cache_state':'SOURCE_UNAVAILABLE_FAIL_CLOSED', **meta})
-                  raise SystemExit(0)
-              raise SystemExit(f'CANONICAL_CACHE_404_WITH_UNEXPECTED_META:{meta}')
           r.raise_for_status()
           df = pd.read_csv(BytesIO(gzip.decompress(r.content)))
-          required = {'ticker','trade_date','participant','buy_value','sell_value','buy_volume','sell_volume','participant_flow_source'}
+          required = {'ticker','trade_date','broker_code','buy_value','sell_value','buy_volume','sell_volume','source','provenance_state'}
           missing = required - set(df.columns)
           if missing:
               raise SystemExit(f'MISSING_COLUMNS:{sorted(missing)}')
@@ -55,5 +45,5 @@ jobs:
           tickers = int(df.loc[df['trade_date'].eq(latest),'ticker'].nunique()) if pd.notna(latest) else 0
           print({'latest_trade_date': str(latest.date()) if pd.notna(latest) else None, 'latest_tickers': tickers, 'rows': len(df), 'days': int(df['trade_date'].nunique())})
           if tickers < 360:
-              raise SystemExit(f'LATEST_PARTICIPANT_COVERAGE_TOO_LOW:{tickers}/400')
+              raise SystemExit(f'OWNED_PARTICIPANT_COVERAGE_TOO_LOW:{tickers}/400')
           PY

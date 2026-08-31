@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 import json
+from urllib.parse import urlparse
 
 import numpy as np
 import pandas as pd
@@ -15,6 +16,7 @@ BRIDGE_VERSION = "1.9.1"
 DATABASE_SCHEMA_VERSION = "emir_autonomous_schema_v9"
 SCANNER_VERSION = SCANNER_RELEASE_VERSION
 DEFAULT_WRITE_CHUNK_SIZE = 200
+IDX_FLOW_SUPABASE_PROJECT_REF = "djqvhbeonmicztxfisav"
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,11 @@ def _detect_key_type(key: str, source_name: str = "") -> str:
     return "BACKEND_KEY_UNKNOWN_FORMAT"
 
 
+def _supabase_project_ref(url: str) -> str:
+    host = str(urlparse(str(url or "")).hostname or "").lower()
+    return host.split(".", 1)[0] if host.endswith(".supabase.co") else ""
+
+
 def config_from_mapping(mapping: Any) -> DatabaseConfig:
     get = mapping.get if hasattr(mapping, "get") else lambda key, default=None: default
     enabled = str(get("CAK_DATABASE_ENABLED", "false")).strip().lower() in {"1", "true", "yes", "on"}
@@ -53,7 +60,10 @@ def config_from_mapping(mapping: Any) -> DatabaseConfig:
     source_name, key = next(((name, value) for name, value in candidates if value), ("", ""))
     schema = str(get("CAK_DATABASE_SCHEMA", "public") or "public").strip()
     key_type = _detect_key_type(key, source_name)
-    if key_type == "PUBLISHABLE_REJECTED":
+    if _supabase_project_ref(url) == IDX_FLOW_SUPABASE_PROJECT_REF:
+        key = ""
+        key_type = "CROSS_SCANNER_PROJECT_REJECTED"
+    elif key_type == "PUBLISHABLE_REJECTED":
         key = ""
     return DatabaseConfig(enabled=enabled, url=url, key=key, schema=schema, key_type=key_type)
 
