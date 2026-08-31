@@ -1,6 +1,8 @@
 import pandas as pd
+import pytest
 
 from top3_lane_patch import (
+    _wrap_renderer,
     select_execution_top3,
     select_guarded_top3,
     select_production_watch_top3,
@@ -143,3 +145,128 @@ def test_execution_lane_returns_only_omed_and_never_backfills_hard_block_or_wait
 def test_execution_lane_can_return_less_than_three():
     out = select_execution_top3(_frame(), 3)
     assert len(out) == 1
+
+
+def test_lane_banner_is_injected_inside_existing_dashboard_wrap():
+    source = pd.DataFrame([
+        {
+            "ticker": ticker,
+            "selection_lane": "RAW_RESEARCH_TOP3",
+            "selection_lane_note": "Research priority only.",
+        }
+        for ticker in ("BBRI.JK", "ADRO.JK", "BBCA.JK")
+    ])
+    frozen = source.copy(deep=True)
+    original = (
+        '<style>.es-wrap{color:white}</style>'
+        '<div class="es-wrap"><h1>TOP 3 EMIR-STYLE SCANNER</h1>'
+        '<section class="es-card rank1">BBRI</section>'
+        '<section class="es-card rank2">ADRO</section>'
+        '<section class="es-card rank3">BBCA</section></div>'
+    )
+    owner = type("Dashboard", (), {"render_top3_dashboard_html": staticmethod(lambda frame: original)})
+
+    _wrap_renderer(owner)
+    _wrap_renderer(owner)
+    html = owner.render_top3_dashboard_html(source)
+
+    assert html.count("RAW_RESEARCH_TOP3") == 1
+    assert html.count('class="es-lane-banner"') == 1
+    assert html.count('class="es-card ') == 3
+    assert all(ticker in html for ticker in ("BBRI", "ADRO", "BBCA"))
+    assert html.index("<style>") < html.index('<div class="es-wrap">')
+    assert html.index('<div class="es-wrap">') < html.index('class="es-lane-banner"')
+    assert html.index('class="es-lane-banner"') < html.index('class="es-card rank1"')
+    pd.testing.assert_frame_equal(source, frozen)
+
+
+def test_lane_banner_fails_soft_when_renderer_contract_is_absent():
+    source = pd.DataFrame([{
+        "ticker": "BBRI.JK",
+        "selection_lane": "RAW_RESEARCH_TOP3",
+        "selection_lane_note": "Research priority only.",
+    }])
+    original = '<section class="custom-dashboard">BBRI</section>'
+    owner = type("Dashboard", (), {"render_top3_dashboard_html": staticmethod(lambda frame: original)})
+
+    _wrap_renderer(owner)
+
+    assert owner.render_top3_dashboard_html(source) == original
+
+
+@pytest.mark.parametrize("result", [None, 17])
+def test_lane_banner_returns_non_string_renderer_output_unchanged(result):
+    source = pd.DataFrame([{"ticker": "BBRI.JK", "selection_lane": "RAW_RESEARCH_TOP3"}])
+    owner = type(
+        "Dashboard",
+        (),
+        {"render_top3_dashboard_html": staticmethod(lambda frame: result)},
+    )
+
+    _wrap_renderer(owner)
+
+    assert owner.render_top3_dashboard_html(source) is result
+
+
+def test_lane_banner_preserves_arbitrary_renderer_object_identity():
+    source = pd.DataFrame([{"ticker": "BBRI.JK", "selection_lane": "RAW_RESEARCH_TOP3"}])
+    result = object()
+    owner = type(
+        "Dashboard",
+        (),
+        {"render_top3_dashboard_html": staticmethod(lambda frame: result)},
+    )
+
+    _wrap_renderer(owner)
+
+    assert owner.render_top3_dashboard_html(source) is result
+
+
+def test_lane_banner_does_not_swallow_original_renderer_exception():
+    source = pd.DataFrame([{"ticker": "BBRI.JK", "selection_lane": "RAW_RESEARCH_TOP3"}])
+
+    def broken_renderer(frame):
+        raise RuntimeError("renderer failed")
+
+    owner = type("Dashboard", (), {"render_top3_dashboard_html": staticmethod(broken_renderer)})
+    _wrap_renderer(owner)
+
+    with pytest.raises(RuntimeError, match="renderer failed"):
+        owner.render_top3_dashboard_html(source)
+
+
+def test_lane_banner_empty_top3_behavior_is_unchanged():
+    source = pd.DataFrame(columns=["ticker", "selection_lane"])
+    original = '<div class="es-wrap">empty renderer output</div>'
+    owner = type("Dashboard", (), {"render_top3_dashboard_html": staticmethod(lambda frame: original)})
+
+    _wrap_renderer(owner)
+
+    assert owner.render_top3_dashboard_html(source) == original
+
+
+def test_lane_banner_does_not_mutate_valid_frozen_snapshot():
+    import final_decision as decision
+
+    source = pd.DataFrame([
+        {
+            "ticker": "BBRI.JK",
+            "selection_lane": "RAW_RESEARCH_TOP3",
+            "raw_research_rank": 1,
+            "guarded_decision_priority_rank": 1,
+            "production_real_money_rank": float("nan"),
+            "decision_snapshot_state": decision.FINAL_DECISION_STATE,
+            "decision_snapshot_version": decision.FINAL_DECISION_VERSION,
+        }
+    ])
+    source["decision_snapshot_fingerprint"] = decision._fingerprint(source)
+    assert decision.is_final_decision_snapshot(source) is True
+    frozen = source.copy(deep=True)
+    original = '<style></style><div class="es-wrap"><section class="es-card rank1">BBRI</section></div>'
+    owner = type("Dashboard", (), {"render_top3_dashboard_html": staticmethod(lambda frame: original)})
+
+    _wrap_renderer(owner)
+    owner.render_top3_dashboard_html(source)
+
+    pd.testing.assert_frame_equal(source, frozen)
+    assert decision.is_final_decision_snapshot(source) is True

@@ -208,19 +208,31 @@ def _wrap_renderer(owner: Any) -> None:
         return
 
     @wraps(original)
-    def wrapped(top3: pd.DataFrame, *args: Any, **kwargs: Any) -> str:
+    def wrapped(top3: pd.DataFrame, *args: Any, **kwargs: Any) -> Any:
         html = original(top3, *args, **kwargs)
+        if not isinstance(html, str):
+            return html
         if not isinstance(top3, pd.DataFrame) or top3.empty:
             return html
         lane = escape(str(top3.iloc[0].get("selection_lane") or "GUARDED_DECISION_TOP3"))
         note = escape(str(top3.iloc[0].get("selection_lane_note") or ""))
         banner = (
-            '<div style="margin:0 0 12px;padding:10px 12px;border:1px solid #35556a;'
+            '<div class="es-lane-banner" style="margin:0 0 12px;padding:10px 12px;border:1px solid #35556a;'
             'border-radius:8px;background:#0a1a24;color:#d8edf7;font-family:system-ui">'
             f'<strong>{lane}</strong><br><span style="font-size:12px;color:#9fc1d2">{note}</span>'
             '</div>'
         )
-        return banner + html
+        # The dashboard is one Streamlit-safe HTML structure: its stylesheet
+        # must remain the leading element and all visible content must stay
+        # inside .es-wrap.  Prepending a sibling <div> makes Streamlit parse the
+        # following <style> as a raw-text node through the rest of the fragment,
+        # so the cards remain in the Python string but never become DOM nodes.
+        wrap_open = '<div class="es-wrap">'
+        insert_at = html.find(wrap_open)
+        if insert_at < 0:
+            return html
+        insert_at += len(wrap_open)
+        return html[:insert_at] + "\n      " + banner + html[insert_at:]
 
     wrapped.__explicit_top3_lane_banner_v1__ = True
     setattr(owner, "render_top3_dashboard_html", wrapped)
