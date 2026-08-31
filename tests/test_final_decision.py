@@ -388,6 +388,32 @@ def test_ambiguous_legacy_overlay_preserves_scores_and_does_not_upgrade_authoriz
     assert not bool(broker_out.loc[0, "real_money_ready"])
 
 
+def test_canonical_finalization_fails_soft_on_no_zapi_history_without_authorization_upgrade(monkeypatch) -> None:
+    _install_compatibility_finalizer_fakes(monkeypatch)
+    monkeypatch.setattr(
+        zapi,
+        "get_zapi_features",
+        lambda tickers: (zapi.score_foreign_history(pd.DataFrame(), tickers), {"state": "NO_DATA"}),
+    )
+    monkeypatch.setattr(decision.public_idx_broker_flow, "enrich_emir_broker", lambda frame: frame.copy())
+    radar = _radar()
+    radar["production_ready"] = False
+    radar["future_direct_forward_authorization_eligible"] = False
+
+    finalized = decision.finalize_decision_snapshot(radar)
+
+    assert finalized["ticker"].tolist() == radar["ticker"].tolist()
+    assert finalized["zapi_foreign_observed_days"].eq(0).all()
+    assert finalized["zapi_foreign_flow_coverage_pct"].eq(0.0).all()
+    assert finalized["zapi_foreign_flow_score"].isna().all()
+    assert finalized["zapi_smart_money_confirmation_weight_pct"].eq(0.0).all()
+    assert not finalized["production_ready"].any()
+    assert not finalized["real_money_ready"].any()
+    assert not finalized["real_money_entry_candidate"].any()
+    assert not finalized["future_direct_forward_authorization_eligible"].any()
+    assert finalized["entry_authorization_state"].eq("WAIT_TIMING_NO_ENTRY").all()
+
+
 def test_zapi_dashboard_blend_is_idempotent() -> None:
     base = pd.DataFrame([{
         "ticker": "TEST", "dashboard_flow_score": 60.0,

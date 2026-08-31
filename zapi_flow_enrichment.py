@@ -357,7 +357,23 @@ def score_foreign_history(history: pd.DataFrame, universe: Iterable[Any] | None 
     for ticker in names:
         local = frame.loc[frame["ticker"].eq(ticker)].sort_values("trade_date").tail(20).copy()
         if local.empty:
-            rows.append({"ticker": ticker})
+            rows.append({
+                "ticker": ticker,
+                "zapi_foreign_latest_trade_date": np.nan,
+                "zapi_foreign_observed_days": 0,
+                "zapi_foreign_net_shares_1d": np.nan,
+                "zapi_foreign_net_shares_5d": np.nan,
+                "zapi_foreign_net_shares_20d": np.nan,
+                "zapi_foreign_net_participation_1d": np.nan,
+                "zapi_foreign_net_participation_5d": np.nan,
+                "zapi_foreign_net_participation_20d": np.nan,
+                "zapi_foreign_positive_days_ratio_5d": np.nan,
+                "zapi_foreign_positive_days_ratio_20d": np.nan,
+                "zapi_foreign_buy_ratio_20d": np.nan,
+                "zapi_foreign_buy_ratio_5d": np.nan,
+                "zapi_flow_source": "",
+                "zapi_flow_unit": "SHARES",
+            })
             continue
         latest = local.iloc[-1]
         recent5 = local.tail(5)

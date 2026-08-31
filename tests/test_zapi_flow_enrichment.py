@@ -40,6 +40,45 @@ def test_foreign_flow_score_separates_accumulation_and_distribution() -> None:
     assert float(pos["zapi_foreign_flow_coverage_pct"]) >= 95.0
 
 
+def test_all_missing_history_preserves_schema_with_zero_coverage() -> None:
+    scored = zapi.score_foreign_history(pd.DataFrame(), ["MISS1.JK", "MISS2"])
+
+    assert scored["ticker"].tolist() == ["MISS1", "MISS2"]
+    expected_columns = {
+        "zapi_foreign_latest_trade_date",
+        "zapi_foreign_observed_days",
+        "zapi_foreign_net_participation_1d",
+        "zapi_foreign_net_participation_5d",
+        "zapi_foreign_net_participation_20d",
+        "zapi_foreign_flow_score",
+        "zapi_foreign_flow_coverage_pct",
+        "zapi_accumulation_confirmation_score",
+        "zapi_smart_money_confirmation_score",
+        "zapi_smc_flow_confirmation_score",
+    }
+    assert expected_columns.issubset(scored.columns)
+    assert scored["zapi_foreign_observed_days"].eq(0).all()
+    assert scored["zapi_foreign_flow_coverage_pct"].eq(0.0).all()
+    assert scored["zapi_foreign_flow_score"].isna().all()
+    assert scored["zapi_accumulation_confirmation_score"].isna().all()
+    assert scored["zapi_smart_money_confirmation_score"].isna().all()
+    assert scored["zapi_smc_flow_confirmation_score"].isna().all()
+    assert scored.filter(like="zapi_foreign_net_participation_").isna().all().all()
+
+
+def test_mixed_history_preserves_real_score_and_fails_soft_for_missing_ticker() -> None:
+    history = _history().loc[lambda frame: frame["ticker"].eq("POS1")].copy()
+    real_only = zapi.score_foreign_history(history, ["POS1"]).set_index("ticker").loc["POS1"]
+    mixed = zapi.score_foreign_history(history, ["POS1", "MISS.JK"]).set_index("ticker")
+
+    pd.testing.assert_series_equal(mixed.loc["POS1"], real_only, check_names=False)
+    missing = mixed.loc["MISS"]
+    assert int(missing["zapi_foreign_observed_days"]) == 0
+    assert float(missing["zapi_foreign_flow_coverage_pct"]) == 0.0
+    assert pd.isna(missing["zapi_foreign_flow_score"])
+    assert pd.isna(missing["zapi_foreign_net_participation_20d"])
+
+
 def test_emir_conviction_and_smart_money_overlay_are_bounded(monkeypatch) -> None:
     features = pd.DataFrame(
         [
