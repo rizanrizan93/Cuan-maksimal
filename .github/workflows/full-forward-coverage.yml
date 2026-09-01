@@ -1,54 +1,63 @@
-name: Emir full forward collection coverage
+name: Phase 5.6 bounded live validation gate — Emir
 
 on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      declared_cumulative_zapi_attempts:
+        description: Previously consumed attempts in the release-controlled 0/12 ledger
+        required: true
+        default: "0"
+        type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: phase5-6-bounded-live-validation-${{ github.repository }}
+  cancel-in-progress: false
+
 env:
   PYTHONPATH: ${{ github.workspace }}
+  PYTHONDONTWRITEBYTECODE: "1"
+  PHASE56_BASELINE_SHA: 42b6d62c44167d824fd087d29f465f4ef3328220
 
 jobs:
-  forward-coverage:
+  bounded-live-validation:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 12
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout selected gate ref without push credentials
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require the dedicated gate branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF_NAME}" = "gate/phase5-6-bounded-live-validation"
+
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.13'
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Check full 400 live forward source coverage
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import pandas as pd
-          from live_forward_evidence import collect_live_forward_evidence
+          python-version: "3.12"
 
-          text = Path('tools/idx_400_production_universe_2026-07.txt').read_text()
-          line = next(line for line in text.splitlines() if line.strip() and not line.startswith('#'))
-          tickers = [item.strip() for item in line.split(',') if item.strip()]
-          assert len(tickers) == 400, len(tickers)
-          events, audit = collect_live_forward_evidence(
-              tickers,
-              lookback_days=180,
-              max_workers=16,
-              timeout=6.0,
-          )
-          checked = audit.loc[pd.to_numeric(audit['coverage_pct'], errors='coerce').fillna(0).gt(0), 'ticker'].nunique()
-          coverage = round(100.0 * checked / len(tickers), 1)
-          states = audit.groupby('state')['ticker'].nunique().sort_values(ascending=False).to_dict()
-          failed = audit.loc[audit['state'].eq('FORWARD_CHECK_FAILED_RETRYABLE'), 'ticker'].nunique()
-          print('FULL_FORWARD_COLLECTION_COVERAGE', coverage)
-          print('STATE_COUNTS', states)
-          print('MATERIAL_EVENTS', len(events), 'MATERIAL_TICKERS', events['ticker'].nunique() if not events.empty else 0)
-          print('FAILED_TICKERS', failed)
-          if coverage < 90.0:
-              raise SystemExit(f'full-universe forward collection coverage too low: {coverage}%')
-          PY
+      - name: Install pinned harness dependencies
+        run: python -m pip install --disable-pip-version-check --no-cache-dir pandas==2.3.3 requests==2.34.2 pytest==8.4.2
+
+      - name: Prove delta allowlist
+        run: python tools/phase5_6_bounded_live_validation.py allowlist --baseline "${PHASE56_BASELINE_SHA}"
+
+      - name: Run targeted fake-only harness tests
+        run: pytest -q -p no:cacheprovider tests/test_phase5_6_bounded_live_validation.py
+
+      - name: Execute bounded state machine
+        env:
+          ZAPI_KEY: ${{ secrets.ZAPI_KEY }}
+          SHARED_EVIDENCE_SUPABASE_URL: ${{ secrets.SHARED_EVIDENCE_SUPABASE_URL }}
+          SHARED_EVIDENCE_SUPABASE_SECRET_KEY: ${{ secrets.SHARED_EVIDENCE_SUPABASE_SECRET_KEY }}
+          SHARED_EVIDENCE_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SHARED_EVIDENCE_SUPABASE_SERVICE_ROLE_KEY }}
+        run: >-
+          python tools/phase5_6_bounded_live_validation.py run
+          --client EMIR
+          --declared-cumulative-attempts "${{ inputs.declared_cumulative_zapi_attempts }}"
