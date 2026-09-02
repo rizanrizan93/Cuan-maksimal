@@ -82,11 +82,11 @@ def _weighted_with_confidence(
     *,
     neutral: float = 50.0,
 ) -> tuple[float, float, float]:
-    """Aggregate observed quality, then apply missing-data confidence once.
+    """Aggregate only observed factors; report missingness as coverage.
 
-    Missing factors are neither negative (0) nor synthetic neutral observations
-    (50).  They reduce model coverage; the resulting quality is shrunk once
-    toward a neutral prior.  This prevents asymmetric missing-data penalties.
+    Missing/provider-unavailable factors are not bearish observations and never
+    receive zero or a synthetic neutral value. Coverage remains separate audit
+    telemetry; explicit negative observations still enter with their real score.
     """
     normalized = [
         (item[0], item[1], 100.0 if len(item) == 2 else _score(item[2], 0.0))
@@ -104,7 +104,7 @@ def _weighted_with_confidence(
     observed = sum(weight for _, weight in valid)
     quality = sum(value * weight for value, weight in valid) / observed
     coverage = 100.0 * observed / possible
-    adjusted = neutral + (coverage / 100.0) * (quality - neutral)
+    adjusted = quality
     return _score(adjusted, neutral), _score(quality, neutral), _score(coverage, 0.0)
 
 
@@ -210,6 +210,9 @@ def _business_momentum(row: Mapping[str, Any]) -> tuple[float, str]:
     earn_q = _num(row.get("earnings_growth_yoy_pct"), np.nan)
     consistency = str(row.get("fundamental_growth_consistency_state") or "YTD_NOT_AVAILABLE")
 
+    if not any(np.isfinite(value) for value in (rev_ytd, earn_ytd, rev_q, earn_q)):
+        return np.nan, "BUSINESS_MOMENTUM_NOT_AVAILABLE"
+
     if q_count >= 2 and (np.isfinite(rev_ytd) or np.isfinite(earn_ytd)):
         rev = _growth_score(rev_ytd, revenue=True)
         earn = _growth_score(earn_ytd, revenue=False)
@@ -243,7 +246,7 @@ def calculate_next_leader_score(row: Mapping[str, Any]) -> dict[str, Any]:
     fundamental = _score(fundamental_raw, 0.0)
     fundamental_cov = _score(row.get("fundamental_coverage_pct"))
     data_quality_raw = _optional_score(row.get("fundamental_data_quality_score"))
-    data_quality = _score(data_quality_raw, fundamental_cov)
+    data_quality = _score(data_quality_raw, fundamental_cov) if np.isfinite(data_quality_raw) else np.nan
     future_ff = _optional_score(row.get("future_fundamental_score"))
     future_ff_cov = _score(row.get("future_fundamental_coverage_pct"))
     has_direct_forward_lineage = "future_direct_forward_visibility_score" in row
@@ -270,6 +273,16 @@ def calculate_next_leader_score(row: Mapping[str, Any]) -> dict[str, Any]:
     inventory_cov = _score(row.get("broker_inventory_coverage_pct"))
     ownership_cov = _score(row.get("ownership_coverage_pct"))
     momentum, momentum_basis = _business_momentum(row)
+    fundamental_observed = bool(
+        fundamental_cov > 0
+        and (
+            np.isfinite(fundamental_raw)
+            or np.isfinite(data_quality_raw)
+            or np.isfinite(momentum)
+            or np.isfinite(_num(row.get("net_margin_ttm_pct"), np.nan))
+            or np.isfinite(_num(row.get("roe_ttm_pct"), np.nan))
+        )
+    )
 
     bank_like = _is_bank_like(row)
     model_state = "STANDARD_CORPORATE_FUNDAMENTAL_MODEL"
@@ -279,8 +292,10 @@ def calculate_next_leader_score(row: Mapping[str, Any]) -> dict[str, Any]:
     if bank_like:
         # Until bank-specific NPL/NIM/CAR/LDR/BOPO fields are ingested, generic OCF/FCF and
         # industrial solvency ratios cannot justify a top-quality rating.
-        effective_fundamental = min(fundamental, 70.0)
-        effective_data_quality = min(data_quality, 75.0)
+        if fundamental_observed and np.isfinite(fundamental_raw):
+            effective_fundamental = min(fundamental, 70.0)
+        if fundamental_observed and np.isfinite(data_quality):
+            effective_data_quality = min(data_quality, 75.0)
         model_state = "BANK_GENERIC_PROXY_LIMITED"
         quality_flags.append("BANK_SPECIFIC_RISK_METRICS_NOT_MODELED")
 
@@ -330,12 +345,11 @@ def calculate_next_leader_score(row: Mapping[str, Any]) -> dict[str, Any]:
     ])
 
     penalty = 0.0
-    if fundamental_cov < 55: penalty += 12.0
-    if effective_data_quality < 55: penalty += 10.0
+    if fundamental_observed and fundamental_cov < 55: penalty += 12.0
+    if fundamental_observed and np.isfinite(effective_data_quality) and effective_data_quality < 55: penalty += 10.0
     cashflow_state = str(row.get("fundamental_cashflow_state") or "")
-    # Cash-flow remains evidence-quality information, but missing cash flow no longer dominates
-    # a business ranking; Real Money Gate separately enforces manual verification.
-    if not bank_like and cashflow_state == "CASHFLOW_TTM_MISSING": penalty += 4.0
+    # Missing cash-flow is not scored. Explicitly adverse cash-flow observations
+    # remain valid negative evidence and are handled below.
     cashflow_quality_state = str(row.get("fundamental_cashflow_quality_state") or "").upper()
     if cashflow_quality_state in {"OCF_NEGATIVE", "OCF_AND_FCF_NEGATIVE"}:
         penalty += 10.0
@@ -346,7 +360,7 @@ def calculate_next_leader_score(row: Mapping[str, Any]) -> dict[str, Any]:
     elif cashflow_quality_state == "CASHFLOW_POSITIVE_WEAK_CONVERSION":
         penalty += 2.0
         quality_flags.append("CASHFLOW_WEAK_CONVERSION_REVIEW")
-    if _score(row.get("fundamental_official_source_coverage_pct")) <= 0: penalty += 4.0
+    if fundamental_observed and _score(row.get("fundamental_official_source_coverage_pct")) <= 0: penalty += 4.0
     if future_ff_state == "FUTURE_FUNDAMENTAL_WEAK_OR_UNPROVEN" and future_ff_cov >= 50:
         penalty += 5.0
         quality_flags.append("FUTURE_FUNDAMENTAL_WEAK_OR_UNPROVEN")
@@ -354,19 +368,21 @@ def calculate_next_leader_score(row: Mapping[str, Any]) -> dict[str, Any]:
         quality_flags.append("FUTURE_FUNDAMENTAL_EVIDENCE_PENDING")
 
     freshness = str(row.get("fundamental_period_freshness_state") or "")
-    if freshness == "AGING_QUARTERLY_PERIOD": penalty += 6.0
-    elif freshness == "LAGGING_REPORTING_PERIOD": penalty += 10.0
-    elif freshness in {"STALE_QUARTERLY_PERIOD", "STALE_RELATIVE_TO_UNIVERSE", "UNKNOWN_PERIOD"}: penalty += 15.0
+    if fundamental_observed:
+        if freshness == "AGING_QUARTERLY_PERIOD": penalty += 6.0
+        elif freshness == "LAGGING_REPORTING_PERIOD": penalty += 10.0
+        elif freshness in {"STALE_QUARTERLY_PERIOD", "STALE_RELATIVE_TO_UNIVERSE"}: penalty += 15.0
 
     consistency = str(row.get("fundamental_growth_consistency_state") or "")
-    if consistency == "TURNAROUND_INFLECTION_UNCONFIRMED": penalty += 10.0
-    elif consistency == "LATEST_QUARTER_DECELERATION_YTD_POSITIVE": penalty += 8.0
-    elif consistency == "QUARTER_YTD_DIVERGENCE_REVIEW": penalty += 6.0
-    elif consistency == "QUARTER_AND_YTD_WEAK": penalty += 12.0
-    elif consistency == "YTD_NOT_AVAILABLE": penalty += 2.0
+    if fundamental_observed:
+        if consistency == "TURNAROUND_INFLECTION_UNCONFIRMED": penalty += 10.0
+        elif consistency == "LATEST_QUARTER_DECELERATION_YTD_POSITIVE": penalty += 8.0
+        elif consistency == "QUARTER_YTD_DIVERGENCE_REVIEW": penalty += 6.0
+        elif consistency == "QUARTER_AND_YTD_WEAK": penalty += 12.0
+        elif consistency == "YTD_NOT_AVAILABLE": penalty += 2.0
 
     leverage = str(row.get("fundamental_leverage_risk_state") or "")
-    if not bank_like:
+    if fundamental_observed and not bank_like:
         if leverage == "HIGH_LEVERAGE": penalty += 8.0
         elif leverage == "EXTREME_LEVERAGE": penalty += 16.0
 
@@ -409,24 +425,41 @@ def calculate_next_leader_score(row: Mapping[str, Any]) -> dict[str, Any]:
     if bank_like:
         penalty += 8.0
 
+    if not fundamental_observed:
+        quality_flags.append("FUNDAMENTAL_MISSING_NOT_SCORED")
+
     score = _score(raw + business_quality_adjustment - penalty)
     fundamental_state = str(row.get("fundamental_state") or "")
-    finite_fundamental = np.isfinite(_num(row.get("fundamental_conversion_score")))
-    evidence_minimum = bool(fundamental_cov >= 35 and data_quality >= 35 and finite_fundamental)
-    fundamental_disqualified = fundamental_state in {"FUNDAMENTAL_WEAK", "PROVIDER_FAILED"} and fundamental < 42
+    fundamental_disqualified = bool(
+        fundamental_observed
+        and fundamental_state == "FUNDAMENTAL_WEAK"
+        and np.isfinite(fundamental_raw)
+        and fundamental < 42
+    )
+    evidence_minimum = bool(model_coverage >= 30.0)
     eligible = bool(evidence_minimum and not fundamental_disqualified)
     data_integrity_block = bool(
         str(row.get("ohlcv_integrity_state") or "") in {"INVALID", "STALE", "CORPORATE_ACTION_REVIEW_REQUIRED"}
         or (bool(row.get("corporate_action_anomaly_flag", False)) and not bool(row.get("corporate_action_review_cleared", False)))
         or bool(row.get("idx_integrity_hard_block", False))
     )
-    current_enough = freshness not in {"STALE_QUARTERLY_PERIOD", "STALE_RELATIVE_TO_UNIVERSE", "UNKNOWN_PERIOD", "LAGGING_REPORTING_PERIOD"}
-    presentation_eligible = bool(eligible and effective_data_quality >= 70 and current_enough and not data_integrity_block)
+    current_enough = bool(
+        not fundamental_observed
+        or freshness not in {"STALE_QUARTERLY_PERIOD", "STALE_RELATIVE_TO_UNIVERSE", "LAGGING_REPORTING_PERIOD"}
+    )
+    presentation_eligible = bool(
+        eligible
+        and current_enough
+        and not data_integrity_block
+        and (not fundamental_observed or (np.isfinite(effective_data_quality) and effective_data_quality >= 70))
+    )
     if not eligible:
         state = "NEXT_LEADER_NOT_QUALIFIED"
     elif data_integrity_block:
         state = "NEXT_LEADER_RESEARCH"
         quality_flags.append("DATA_INTEGRITY_REVIEW_REQUIRED")
+    elif not fundamental_observed:
+        state = "NEXT_LEADER_WATCH" if score >= 70 and model_coverage >= 35 else "NEXT_LEADER_RESEARCH"
     elif score >= 80 and effective_fundamental >= 65 and effective_data_quality >= 80 and (not np.isfinite(future_rank_signal) or (future_rank_coverage >= 50 and _score(future_rank_signal, 0) >= 60)):
         state = "NEXT_LEADER_HIGH_CONVICTION"
     elif score >= 75 and effective_fundamental >= 55 and effective_data_quality >= 75:
@@ -449,6 +482,7 @@ def calculate_next_leader_score(row: Mapping[str, Any]) -> dict[str, Any]:
         "next_leader_direct_forward_visibility_coverage_pct": round(direct_forward_cov, 1),
         "next_leader_overlap_control_state": "DIRECT_FORWARD_SIGNAL_EXCLUDES_CURRENT_FUNDAMENTAL" if has_direct_forward_lineage else "LEGACY_HOLISTIC_FUTURE_FALLBACK",
         "next_leader_business_quality_adjustment": round(business_quality_adjustment, 1),
+        "next_leader_fundamental_scoring_state": "OBSERVED_SCORED" if fundamental_observed else "MISSING_NOT_SCORED",
         "next_leader_sector_model_state": model_state,
         "next_leader_quality_flags": " | ".join(quality_flags) or "NONE",
     }
@@ -480,13 +514,13 @@ def calculate_real_money_candidate_score(row: Mapping[str, Any]) -> dict[str, An
     setup with weak fundamentals cannot dominate purely on price/flow. It is not an
     authorization gate; ``real_money_entry_candidate`` remains the prerequisite.
     """
-    next_leader = _score(row.get("next_leader_score"), 0)
-    final_score = _score(row.get("emir_final_score", row.get("emir_conviction_score")), 0)
+    next_leader = _optional_score(row.get("next_leader_score"))
+    final_score = _optional_score(row.get("emir_final_score", row.get("emir_conviction_score")))
     silent = _score(row.get("dashboard_silent_accum_score"), 0)
     flow = _score(row.get("dashboard_flow_score"), 0)
     structure = _score(row.get("market_structure_score"), 0)
     liquidity = _score(row.get("liquidity_score"), 0)
-    fundamental = _score(row.get("fundamental_conversion_score"), 0)
+    fundamental = _optional_score(row.get("fundamental_conversion_score"))
     smart = _score(row.get("smart_money_score"), 0)
     distribution = _score(row.get("distribution_score"), 100)
     rr = _num(row.get("execution_rr_tp1"), np.nan)
