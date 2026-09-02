@@ -110,6 +110,7 @@ def main() -> None:
             fundamental = {
                 "fundamental_conversion_score": 68.0,
                 "fundamental_coverage_pct": 75.0,
+                "fundamental_data_quality_score": 82.0,
                 "fundamental_state": "FUTURE_FUNDAMENTAL_SUPPORTIVE",
                 "fundamental_provenance_state": "FIXTURE_PUBLIC_FINANCIALS",
             }
@@ -150,7 +151,11 @@ def main() -> None:
                 "narrative_official_source_count": 1,
                 "narrative_independent_story_count": 2,
             })
-            fundamental.update({"fundamental_conversion_score": 78.0, "fundamental_coverage_pct": 85.0})
+            fundamental.update({
+                "fundamental_conversion_score": 78.0,
+                "fundamental_coverage_pct": 85.0,
+                "fundamental_data_quality_score": 90.0,
+            })
             integrity = {
                 "idx_integrity_score": 92.0,
                 "idx_integrity_coverage_pct": 85.0,
