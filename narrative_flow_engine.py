@@ -2039,6 +2039,22 @@ def build_emir_profile(
     fundamental_conversion = _finite(fundamental.get("fundamental_conversion_score"), np.nan)
     fundamental_coverage = _finite(fundamental.get("fundamental_coverage_pct"), 0)
     fundamental_data_quality = _finite(fundamental.get("fundamental_data_quality_score"), 0)
+    fundamental_observed = bool(
+        fundamental_coverage > 0
+        and (np.isfinite(fundamental_conversion) or fundamental_data_quality > 0)
+    )
+    fundamental_core_gate = bool(
+        fundamental_observed
+        and fundamental_coverage >= 45
+        and _finite(fundamental_conversion, 0) >= 55
+        and fundamental_data_quality >= 75
+    )
+    fundamental_auto_gate = bool(
+        fundamental_observed
+        and fundamental_coverage >= 35
+        and _finite(fundamental_conversion, 0) >= 55
+        and fundamental_data_quality >= 75
+    )
     # Fundamental conversion already owns a 16% pillar below.  Older versions
     # reused 40% of it inside this 8% narrative-conversion pillar, silently
     # adding another 3.2 percentage points of the same evidence.  Keep this
@@ -2104,7 +2120,7 @@ def build_emir_profile(
     # scoring pillar instead of letting it contribute only through narrative conversion.
     # This is intentionally closer to the public macro/sector -> business conversion ->
     # narrative/flow -> execution sequence while preserving flow as the largest single pillar.
-    raw_score, evidence_coverage = _weighted_fixed([
+    conviction_components = [
         (flow_score, 0.18, flow_coverage),
         (fundamental_conversion, 0.16, fundamental_coverage),
         (narrative_runway_score, 0.14, narrative_runway_coverage),
@@ -2116,7 +2132,17 @@ def build_emir_profile(
         (orderbook_score, 0.04, orderbook_coverage),
         (trend, 0.03, 100 if np.isfinite(trend) else 0),
         (liquidity_float_score, 0.02, liquidity_float_coverage),
-    ])
+    ]
+    raw_score, fixed_evidence_coverage = _weighted_fixed(conviction_components)
+    # Provider-unavailable fundamentals remain visible in raw coverage telemetry,
+    # but are removed from the decision denominator rather than treated as a
+    # bearish or neutral observation.
+    decision_components = [
+        component
+        for index, component in enumerate(conviction_components)
+        if fundamental_observed or index != 1
+    ]
+    _, evidence_coverage = _weighted_fixed(decision_components)
     distribution = _finite(features.get("distribution_score"), 0)
     broker_shift = str(broker.get("broker_inventory_shift_state") or "")
     verified_broker_distribution = bool(
@@ -2183,7 +2209,7 @@ def build_emir_profile(
 
     core_thesis_ready = bool(
         deep_reviewed and np.isfinite(conviction) and conviction >= 62 and evidence_coverage >= 56
-        and fundamental_coverage >= 45 and _finite(fundamental_conversion, 0) >= 55 and fundamental_data_quality >= 75
+        and fundamental_core_gate
         and narrative_coverage >= 30 and _finite(conversion, 0) >= 45
         and (
             int(narrative.get("narrative_verified_source_count", 0) or 0) >= 1
@@ -2197,7 +2223,7 @@ def build_emir_profile(
     )
     auto_core_thesis_ready = bool(
         deep_reviewed and np.isfinite(conviction) and conviction >= 55 and evidence_coverage >= 50
-        and fundamental_coverage >= 35 and _finite(fundamental_conversion, 0) >= 55 and fundamental_data_quality >= 75
+        and fundamental_auto_gate
         and narrative_coverage >= 30 and _finite(conversion, 0) >= 45
         and (
             int(narrative.get("narrative_verified_source_count", 0) or 0) >= 1
@@ -2239,7 +2265,7 @@ def build_emir_profile(
     auto_eod_ready = bool(
         auto_core_thesis_ready and integrity_auto_ready and orderbook_proxy and orderbook_coverage >= 45
         and _finite(orderbook_score, 0) >= 52 and broker_coverage >= 45
-        and fundamental_coverage >= 35 and not capacity_block
+        and fundamental_auto_gate and not capacity_block
     )
     precise_ready = bool(
         core_thesis_ready and integrity_ready and orderbook_verified and orderbook_coverage >= 60
@@ -2263,11 +2289,11 @@ def build_emir_profile(
         state, action = "EMIR_CORE_THESIS_READY_WAIT_IDX_INTEGRITY", "VERIFY_HSC_BOARD_FREE_FLOAT_AND_CORPORATE_ACTION"
     elif thesis_ready:
         state, action = "EMIR_THESIS_READY_WAIT_BID_OFFER", "WAIT_DIRECT_BID_OFFER_TRIGGER"
-    elif fundamental_coverage < 35:
+    elif not fundamental_observed or fundamental_coverage < 35:
         state, action = "EMIR_FUNDAMENTAL_EVIDENCE_PENDING", "COMPLETE_FUNDAMENTAL_EVIDENCE"
-    elif _finite(fundamental_conversion, 0) < 55:
+    elif fundamental_observed and _finite(fundamental_conversion, 0) < 55:
         state, action = "EMIR_WAIT_FUNDAMENTAL_CONVERSION", "WAIT_BUSINESS_AND_CASHFLOW_CONVERSION"
-    elif fundamental_data_quality < 75:
+    elif fundamental_observed and fundamental_data_quality < 75:
         state, action = "EMIR_FUNDAMENTAL_QUALITY_PENDING", "VERIFY_OR_IMPROVE_FUNDAMENTAL_DATA_QUALITY"
     elif lifecycle == "INVENTORY_COLLECTION":
         state, action = "EMIR_WATCH_INVENTORY_COLLECTION", "WATCH_SMART_MONEY_COLLECTION"
@@ -2295,8 +2321,10 @@ def build_emir_profile(
         risks.append("NARRATIVE_EVIDENCE_WEAK")
     if int(narrative.get("narrative_verified_source_count", 0) or 0) < 1:
         risks.append("NO_DIRECTLY_VERIFIED_NARRATIVE_SOURCE")
-    if fundamental_coverage < 35:
-        risks.append("FUNDAMENTAL_PUBLIC_DATA_WEAK_OR_MISSING")
+    if not fundamental_observed:
+        risks.append("FUNDAMENTAL_NOT_AVAILABLE_NOT_SCORED")
+    elif fundamental_coverage < 35:
+        risks.append("FUNDAMENTAL_PUBLIC_DATA_WEAK")
     elif _finite(fundamental_conversion, 0) < 55:
         risks.append("BUSINESS_OR_FUTURE_FUNDAMENTAL_CONVERSION_WEAK")
     if alignment_coverage < 35:
@@ -2418,8 +2446,12 @@ def build_emir_profile(
     # for a proxy-backed candidate. Proxy-only candidates can reach MANUAL_CONFIRMATION_REQUIRED
     # but never DIRECT_VERIFIED_READY.
     proxy_only = official_cov < 50
-    if proxy_only: manual_conditions.append("PROXY_FUNDAMENTAL_MANUAL_VERIFY")
-    if data_quality < 75: blockers.append("FUNDAMENTAL_DATA_QUALITY_LT_75")
+    if not fundamental_observed:
+        manual_conditions.append("FUNDAMENTAL_NOT_AVAILABLE_MANUAL_VERIFY")
+    elif proxy_only:
+        manual_conditions.append("PROXY_FUNDAMENTAL_MANUAL_VERIFY")
+    if fundamental_observed and data_quality < 75:
+        blockers.append("FUNDAMENTAL_DATA_QUALITY_LT_75")
     cashflow_missing = ("MISSING" in cashflow_state or not cashflow_state or cashflow_quality_state == "CASHFLOW_NOT_AVAILABLE")
     if cashflow_missing:
         manual_conditions.append("CASHFLOW_PROXY_OR_MANUAL_VERIFY")
@@ -2429,18 +2461,21 @@ def build_emir_profile(
         manual_conditions.append("FCF_NEGATIVE_CAPEX_REVIEW")
     elif cashflow_quality_state == "CASHFLOW_POSITIVE_WEAK_CONVERSION":
         manual_conditions.append("CASHFLOW_WEAK_CONVERSION_REVIEW")
-    if freshness_state in {"STALE_QUARTERLY_PERIOD","UNKNOWN_PERIOD","LAGGING_REPORTING_PERIOD","STALE_RELATIVE_TO_UNIVERSE"}:
-        blockers.append("FUNDAMENTAL_PERIOD_NOT_CURRENT")
-    elif freshness_state == "AGING_QUARTERLY_PERIOD":
-        manual_conditions.append("AGING_FUNDAMENTAL_PERIOD_MANUAL_VERIFY")
-    if growth_consistency_state in {"TURNAROUND_INFLECTION_UNCONFIRMED","LATEST_QUARTER_DECELERATION_YTD_POSITIVE","QUARTER_YTD_DIVERGENCE_REVIEW"}:
-        manual_conditions.append(growth_consistency_state)
-    elif growth_consistency_state == "QUARTER_AND_YTD_WEAK":
-        blockers.append("QUARTER_AND_YTD_WEAK")
-    elif growth_consistency_state == "YTD_NOT_AVAILABLE":
-        manual_conditions.append("YTD_GROWTH_NOT_AVAILABLE")
-    if leverage_state in {"HIGH_LEVERAGE","EXTREME_LEVERAGE"}: blockers.append(leverage_state)
-    if _finite(fundamental_conversion,0) < 55: blockers.append("FUNDAMENTAL_CONVERSION_LT_55")
+    if fundamental_observed:
+        if freshness_state in {"STALE_QUARTERLY_PERIOD","LAGGING_REPORTING_PERIOD","STALE_RELATIVE_TO_UNIVERSE"}:
+            blockers.append("FUNDAMENTAL_PERIOD_NOT_CURRENT")
+        elif freshness_state == "AGING_QUARTERLY_PERIOD":
+            manual_conditions.append("AGING_FUNDAMENTAL_PERIOD_MANUAL_VERIFY")
+        if growth_consistency_state in {"TURNAROUND_INFLECTION_UNCONFIRMED","LATEST_QUARTER_DECELERATION_YTD_POSITIVE","QUARTER_YTD_DIVERGENCE_REVIEW"}:
+            manual_conditions.append(growth_consistency_state)
+        elif growth_consistency_state == "QUARTER_AND_YTD_WEAK":
+            blockers.append("QUARTER_AND_YTD_WEAK")
+        elif growth_consistency_state == "YTD_NOT_AVAILABLE":
+            manual_conditions.append("YTD_GROWTH_NOT_AVAILABLE")
+        if leverage_state in {"HIGH_LEVERAGE","EXTREME_LEVERAGE"}:
+            blockers.append(leverage_state)
+        if _finite(fundamental_conversion,0) < 55:
+            blockers.append("FUNDAMENTAL_CONVERSION_LT_55")
     if not manual_verified_story:
         if public_story_proxy_ok:
             manual_conditions.append("PUBLIC_NARRATIVE_MANUAL_VERIFY")
@@ -2570,7 +2605,9 @@ def build_emir_profile(
         "emir_structure_alpha_score": round(structure_alpha_score, 1) if np.isfinite(structure_alpha_score) else np.nan,
         "emir_structure_overlap_control_state": "PRICE_GEOMETRY_ONLY_IN_CONVICTION_FLOW_TREND_EXCLUDED_V1",
         "emir_evidence_coverage_pct": round(evidence_coverage, 1),
-        "emir_scoring_lineage_state": "DISJOINT_EVIDENCE_PILLARS_V2",
+        "emir_fixed_denominator_coverage_pct": round(fixed_evidence_coverage, 1),
+        "emir_scoring_lineage_state": "DISJOINT_EVIDENCE_PILLARS_AVAILABILITY_AWARE_V3",
+        "fundamental_scoring_state": "OBSERVED_SCORED" if fundamental_observed else "MISSING_NOT_SCORED",
         "emir_overlap_control_state": "FUNDAMENTAL_NOT_REUSED_IN_NARRATIVE_CONVERSION",
         "emir_distribution_penalty_basis": "DIRECT_BROKER_ONLY" if verified_broker_distribution else "OHLCV_DISTRIBUTION_GATE_ONLY_NOT_SCORE_PENALTY",
         "emir_decision_state": state,
@@ -2598,7 +2635,12 @@ def build_emir_profile(
         "execution_authorized": real_money_ready,
         "real_money_block_reasons": " | ".join(blockers) or "NONE",
         "real_money_manual_conditions": " | ".join(manual_conditions) or "NONE",
-        "real_money_fundamental_evidence_tier": "OFFICIAL_VERIFIED" if official_cov >= 50 else "PUBLIC_PROXY_ACCEPTED_MANUAL",
+        "real_money_fundamental_evidence_tier": (
+            "MISSING_NOT_SCORED"
+            if not fundamental_observed
+            else "OFFICIAL_VERIFIED" if official_cov >= 50
+            else "PUBLIC_PROXY_ACCEPTED_MANUAL"
+        ),
         "real_money_narrative_evidence_tier": narrative_evidence_tier,
         "real_money_manual_checklist": manual_checklist,
         "guarded_position_cap_after_manual_confirmation_pct": round(manual_cap,2),
