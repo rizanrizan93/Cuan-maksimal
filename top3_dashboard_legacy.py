@@ -436,7 +436,16 @@ def calculate_next_leader_score(row: Mapping[str, Any]) -> dict[str, Any]:
         and np.isfinite(fundamental_raw)
         and fundamental < 42
     )
-    evidence_minimum = bool(model_coverage >= 30.0)
+    evidence_minimum = bool(
+        (
+            fundamental_cov >= 35
+            and np.isfinite(data_quality)
+            and data_quality >= 35
+            and np.isfinite(fundamental_raw)
+        )
+        if fundamental_observed
+        else model_coverage >= 30.0
+    )
     eligible = bool(evidence_minimum and not fundamental_disqualified)
     data_integrity_block = bool(
         str(row.get("ohlcv_integrity_state") or "") in {"INVALID", "STALE", "CORPORATE_ACTION_REVIEW_REQUIRED"}
