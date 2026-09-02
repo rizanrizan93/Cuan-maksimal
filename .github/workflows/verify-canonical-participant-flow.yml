@@ -1,13 +1,7 @@
-name: Emir-owned IDX participant flow verify
+name: Emir participant cache manual verify
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '40 13 * * 1-5'
-  push:
-    paths:
-      - '.github/workflows/verify-canonical-participant-flow.yml'
-      - 'broker_runtime_patch.py'
 
 permissions:
   contents: read
@@ -18,11 +12,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
       - run: pip install pandas requests
-      - name: Verify Emir-owned participant cache
+      - name: Verify Emir participant cache
         run: |
           python - <<'PY'
           from io import BytesIO
@@ -31,7 +27,7 @@ jobs:
           import requests
 
           cache_url = 'https://raw.githubusercontent.com/rizanrizan93/Cuan-maksimal/main/data/public_broker_flow_30d.csv.gz'
-          headers = {'User-Agent':'Emir-Owned-Participant-Verify/1.0'}
+          headers = {'User-Agent':'Emir-Participant-Manual-Verify/1.0'}
           r = requests.get(cache_url, timeout=20, headers=headers)
           r.raise_for_status()
           df = pd.read_csv(BytesIO(gzip.decompress(r.content)))
