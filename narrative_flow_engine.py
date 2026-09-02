@@ -2044,20 +2044,16 @@ def build_emir_profile(
         and (np.isfinite(fundamental_conversion) or fundamental_data_quality > 0)
     )
     fundamental_core_gate = bool(
-        not fundamental_observed
-        or (
-            fundamental_coverage >= 45
-            and _finite(fundamental_conversion, 0) >= 55
-            and fundamental_data_quality >= 75
-        )
+        fundamental_observed
+        and fundamental_coverage >= 45
+        and _finite(fundamental_conversion, 0) >= 55
+        and fundamental_data_quality >= 75
     )
     fundamental_auto_gate = bool(
-        not fundamental_observed
-        or (
-            fundamental_coverage >= 35
-            and _finite(fundamental_conversion, 0) >= 55
-            and fundamental_data_quality >= 75
-        )
+        fundamental_observed
+        and fundamental_coverage >= 35
+        and _finite(fundamental_conversion, 0) >= 55
+        and fundamental_data_quality >= 75
     )
     # Fundamental conversion already owns a 16% pillar below.  Older versions
     # reused 40% of it inside this 8% narrative-conversion pillar, silently
@@ -2293,7 +2289,7 @@ def build_emir_profile(
         state, action = "EMIR_CORE_THESIS_READY_WAIT_IDX_INTEGRITY", "VERIFY_HSC_BOARD_FREE_FLOAT_AND_CORPORATE_ACTION"
     elif thesis_ready:
         state, action = "EMIR_THESIS_READY_WAIT_BID_OFFER", "WAIT_DIRECT_BID_OFFER_TRIGGER"
-    elif fundamental_observed and fundamental_coverage < 35:
+    elif not fundamental_observed or fundamental_coverage < 35:
         state, action = "EMIR_FUNDAMENTAL_EVIDENCE_PENDING", "COMPLETE_FUNDAMENTAL_EVIDENCE"
     elif fundamental_observed and _finite(fundamental_conversion, 0) < 55:
         state, action = "EMIR_WAIT_FUNDAMENTAL_CONVERSION", "WAIT_BUSINESS_AND_CASHFLOW_CONVERSION"
