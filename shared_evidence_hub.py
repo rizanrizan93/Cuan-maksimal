@@ -277,12 +277,46 @@ class SharedEvidenceCoordinator:
             if not stamps or checked_at - max(stamps) > max_age: return EvidenceState.STALE
         return EvidenceState.VALID
 
-    def get_or_refresh(self, key: EvidenceKey, *, read_current: Callable[[], list[Mapping[str, Any]]], fetch: Callable[[], list[Mapping[str, Any]]], persist: Callable[[list[Mapping[str, Any]]], int], validate: Callable[[list[Mapping[str, Any]]], tuple[bool, str]], max_age: timedelta | None = None, minimum_rows: int = 1, lease_seconds: int = 300) -> RefreshResult:
-        normalized, current = key.normalized(), read_current()
+    def get_or_refresh(
+        self,
+        key: EvidenceKey,
+        *,
+        read_current: Callable[[], list[Mapping[str, Any]]],
+        fetch: Callable[[], list[Mapping[str, Any]]],
+        persist: Callable[[list[Mapping[str, Any]]], int],
+        validate: Callable[[list[Mapping[str, Any]]], tuple[bool, str]],
+        max_age: timedelta | None = None,
+        minimum_rows: int = 1,
+        lease_seconds: int = 300,
+        allow_empty_valid: bool = False,
+        read_empty_current: Callable[[], bool] | None = None,
+    ) -> RefreshResult:
+        normalized = key.normalized()
+
+        def empty_cache_hit() -> bool:
+            return bool(
+                allow_empty_valid
+                and read_empty_current is not None
+                and read_empty_current()
+            )
+
+        current = read_current()
         state = self.classify(current, max_age=max_age, minimum_rows=minimum_rows)
         if state is EvidenceState.VALID:
-            self._inc("cache_hits"); self._inc("calls_avoided")
+            self._inc("cache_hits")
+            self._inc("calls_avoided")
             return RefreshResult(state, "CACHE_HIT", tuple(current), cache_hit=True, request_avoided=True)
+        if not current and empty_cache_hit():
+            self._inc("cache_hits")
+            self._inc("calls_avoided")
+            return RefreshResult(
+                EvidenceState.VALID,
+                "CACHE_HIT_EMPTY",
+                (),
+                cache_hit=True,
+                request_avoided=True,
+            )
+
         self._inc("cache_misses")
         lease = dict(self.backend.acquire_lease(normalized, self.worker_id, lease_seconds))
         if not bool(lease.get("acquired")):
@@ -290,33 +324,108 @@ class SharedEvidenceCoordinator:
             readback = read_current()
             readback_state = self.classify(readback, max_age=max_age, minimum_rows=minimum_rows)
             if readback_state is EvidenceState.VALID:
-                self._inc("cache_hits"); self._inc("calls_avoided")
-                return RefreshResult(readback_state, "CACHE_FILLED_BY_OTHER_CLIENT", tuple(readback), cache_hit=True, request_avoided=True, lease_state="LOCKED_REUSED")
-            return RefreshResult(state, MissingReason.REFRESH_LOCKED.value, tuple(current), request_avoided=True, lease_state="LOCKED")
+                self._inc("cache_hits")
+                self._inc("calls_avoided")
+                return RefreshResult(
+                    readback_state, "CACHE_FILLED_BY_OTHER_CLIENT", tuple(readback),
+                    cache_hit=True, request_avoided=True, lease_state="LOCKED_REUSED",
+                )
+            if not readback and empty_cache_hit():
+                self._inc("cache_hits")
+                self._inc("calls_avoided")
+                return RefreshResult(
+                    EvidenceState.VALID,
+                    "CACHE_FILLED_EMPTY_BY_OTHER_CLIENT",
+                    (),
+                    cache_hit=True,
+                    request_avoided=True,
+                    lease_state="LOCKED_REUSED_EMPTY",
+                )
+            return RefreshResult(
+                state, MissingReason.REFRESH_LOCKED.value, tuple(current),
+                request_avoided=True, lease_state="LOCKED",
+            )
+
         self._inc("calls_attempted")
         attempted_at = datetime.now(timezone.utc)
         try:
             fetched = [dict(row) for row in fetch()]
+            if allow_empty_valid and not fetched:
+                if not self.backend.complete_lease(normalized, self.worker_id, "COMPLETED_EMPTY"):
+                    raise RuntimeError(MissingReason.REFRESH_LEASE_EXPIRED.value)
+                self.backend.record_provider_state({
+                    "provider": normalized.provider,
+                    "endpoint_family": normalized.family,
+                    "scope": normalized.scope,
+                    "target_date": normalized.target_date.isoformat(),
+                    "last_attempt_at": attempted_at.isoformat(),
+                    "last_success_at": datetime.now(timezone.utc).isoformat(),
+                    "latest_source_date": normalized.target_date.isoformat(),
+                    "response_state": "VALID_EMPTY",
+                    "error_classification": None,
+                })
+                self._inc("success")
+                return RefreshResult(
+                    EvidenceState.VALID,
+                    "REFRESHED_EMPTY",
+                    (),
+                    provider_called=True,
+                    lease_state="COMPLETED_EMPTY",
+                )
+
             valid, reason = validate(fetched)
             if not valid:
-                self._inc("failure"); self.backend.fail_lease(normalized, self.worker_id, reason)
-                self.backend.record_provider_state({"provider": normalized.provider, "endpoint_family": normalized.family, "scope": normalized.scope, "target_date": normalized.target_date.isoformat(), "last_attempt_at": attempted_at.isoformat(), "response_state": reason, "error_classification": reason})
+                self._inc("failure")
+                self.backend.fail_lease(normalized, self.worker_id, reason)
+                self.backend.record_provider_state({
+                    "provider": normalized.provider,
+                    "endpoint_family": normalized.family,
+                    "scope": normalized.scope,
+                    "target_date": normalized.target_date.isoformat(),
+                    "last_attempt_at": attempted_at.isoformat(),
+                    "response_state": reason,
+                    "error_classification": reason,
+                })
                 return RefreshResult(EvidenceState.ERROR, reason, provider_called=True, lease_state="FAILED")
             written = int(persist(fetched))
-            if written < len(fetched): raise RuntimeError(MissingReason.PERSIST_FAILURE.value)
+            if written < len(fetched):
+                raise RuntimeError(MissingReason.PERSIST_FAILURE.value)
             readback = read_current()
             readback_state = self.classify(readback, max_age=max_age, minimum_rows=minimum_rows)
-            if readback_state is not EvidenceState.VALID: raise RuntimeError(MissingReason.READBACK_FAILURE.value)
+            if readback_state is not EvidenceState.VALID:
+                raise RuntimeError(MissingReason.READBACK_FAILURE.value)
             if not self.backend.complete_lease(normalized, self.worker_id, "COMPLETED"):
                 raise RuntimeError(MissingReason.REFRESH_LEASE_EXPIRED.value)
-            self.backend.record_provider_state({"provider": normalized.provider, "endpoint_family": normalized.family, "scope": normalized.scope, "target_date": normalized.target_date.isoformat(), "last_attempt_at": attempted_at.isoformat(), "last_success_at": datetime.now(timezone.utc).isoformat(), "latest_source_date": normalized.target_date.isoformat(), "response_state": "VALID", "error_classification": None})
+            self.backend.record_provider_state({
+                "provider": normalized.provider,
+                "endpoint_family": normalized.family,
+                "scope": normalized.scope,
+                "target_date": normalized.target_date.isoformat(),
+                "last_attempt_at": attempted_at.isoformat(),
+                "last_success_at": datetime.now(timezone.utc).isoformat(),
+                "latest_source_date": normalized.target_date.isoformat(),
+                "response_state": "VALID",
+                "error_classification": None,
+            })
             self._inc("success")
-            return RefreshResult(EvidenceState.VALID, "REFRESHED", tuple(readback), provider_called=True, lease_state="COMPLETED")
+            return RefreshResult(
+                EvidenceState.VALID, "REFRESHED", tuple(readback),
+                provider_called=True, lease_state="COMPLETED",
+            )
         except Exception as exc:
             reason = normalize_failure_reason(exc)
-            self._inc("failure"); self.backend.fail_lease(normalized, self.worker_id, reason)
+            self._inc("failure")
+            self.backend.fail_lease(normalized, self.worker_id, reason)
             try:
-                self.backend.record_provider_state({"provider": normalized.provider, "endpoint_family": normalized.family, "scope": normalized.scope, "target_date": normalized.target_date.isoformat(), "last_attempt_at": attempted_at.isoformat(), "response_state": "ERROR", "error_classification": reason})
+                self.backend.record_provider_state({
+                    "provider": normalized.provider,
+                    "endpoint_family": normalized.family,
+                    "scope": normalized.scope,
+                    "target_date": normalized.target_date.isoformat(),
+                    "last_attempt_at": attempted_at.isoformat(),
+                    "response_state": "ERROR",
+                    "error_classification": reason,
+                })
             except Exception:
                 pass
             return RefreshResult(EvidenceState.ERROR, reason, tuple(current), provider_called=True, lease_state="FAILED")
