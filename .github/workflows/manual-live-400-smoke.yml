@@ -1,0 +1,102 @@
+name: Emir manual representative production 400
+
+on:
+  workflow_dispatch:
+    inputs:
+      selected_ref:
+        description: Exact branch, tag, or commit SHA to run deliberately
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  PYTHONPATH: ${{ github.workspace }}
+
+jobs:
+  representative-400:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout explicitly selected ref without push credentials
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.selected_ref }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install production dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run manually gated live forward acquisition witness
+        run: |
+          mkdir -p manual_400_output
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          from live_forward_evidence import collect_live_forward_evidence
+
+          names = ['MARK.JK','OMED.JK','TSPC.JK','MAHA.JK','ELSA.JK','TOTL.JK','DGWG.JK','AYAM.JK']
+          companies = {
+              'MARK.JK':'MARK DYNAMICS INDONESIA Tbk, PT',
+              'OMED.JK':'JAYAMAS MEDICA INDUSTRI Tbk, PT',
+              'TSPC.JK':'Tempo Scan Pacific Tbk, PT',
+              'MAHA.JK':'MANDIRI HERINDO ADIPERKASA Tbk, PT',
+              'ELSA.JK':'Elnusa Tbk, PT',
+              'TOTL.JK':'Total Bangun Persada Tbk, PT',
+              'DGWG.JK':'DELTA GIRI WACANA Tbk, PT',
+              'AYAM.JK':'JANU PUTRA SEJAHTERA Tbk, PT',
+          }
+          events, audit = collect_live_forward_evidence(
+              names,
+              company_names=companies,
+              lookback_days=180,
+              max_workers=8,
+              timeout=6.0,
+          )
+          audit.to_csv('manual_400_output/live-forward-audit.csv', index=False)
+          events.to_csv('manual_400_output/live-forward-events.csv', index=False)
+          checked = audit.loc[
+              audit['coverage_pct'].fillna(0).astype(float).gt(0), 'ticker'
+          ].nunique()
+          coverage_pct = round(100.0 * checked / len(names), 1)
+          summary = {
+              'coverage_pct': coverage_pct,
+              'material_events': int(len(events)),
+              'material_tickers': int(events['ticker'].nunique()) if not events.empty else 0,
+          }
+          Path('manual_400_output/live-forward-summary.json').write_text(
+              json.dumps(summary, indent=2) + '\n', encoding='utf-8'
+          )
+          print(json.dumps(summary, sort_keys=True))
+          if coverage_pct < 90.0:
+              raise SystemExit(f'live forward collection coverage too low: {coverage_pct}%')
+          if events.empty:
+              raise SystemExit('live forward acquisition returned no material evidence')
+          PY
+
+      - name: Run exact representative 400 production contract
+        run: |
+          set -o pipefail
+          python validation_400_v1_6_3.py | tee manual_400_output/validation-400.log
+
+      - name: Record selected revision
+        if: always()
+        run: |
+          mkdir -p manual_400_output
+          git rev-parse HEAD > manual_400_output/selected-commit-sha.txt
+
+      - name: Upload coverage and production-contract artifacts
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: emir-manual-representative-production-400
+          path: |
+            manual_400_output/
+            validation_artifacts_v1_6_3/
+          if-no-files-found: warn
