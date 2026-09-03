@@ -212,3 +212,49 @@ def test_cache_database_disabled_does_not_raise():
     assert write.iloc[0]["state"] == "CACHE_DATABASE_DISABLED"
     assert verify.iloc[0]["state"] == "CACHE_PERSISTENCE_SKIPPED"
     assert pc.cache_persistence_state(verify) == "CACHE_MEMORY_ONLY"
+
+
+def test_read_only_completed_session_loader_excludes_stale_ohlcv(monkeypatch):
+    cached_frame = frame("2026-08-03", 20)
+    # Force the final bar to the stale Friday before the expected 2026-09-02 session.
+    cached_frame = cached_frame.loc[cached_frame.index <= pd.Timestamp("2026-08-28")]
+    row = pc.build_ohlcv_cache_row(
+        "PSAB.JK",
+        cached_frame,
+        period="5y",
+        provider="YAHOO",
+        checked_at="2026-08-29T09:34:00Z",
+    )
+    monkeypatch.setattr(pc, "read_ohlcv_cache", lambda *_: {"PSAB.JK": row})
+
+    frames, audit = pc.load_cached_ohlcv_frames(
+        config(),
+        ["PSAB"],
+        now="2026-09-03T10:00:00+07:00",
+        completed_only=True,
+    )
+    assert "PSAB.JK" not in frames
+    assert audit.iloc[0]["status"] == "CACHE_STALE_NO_PROVIDER_CALL"
+    assert "expected=2026-09-02" in str(audit.iloc[0]["detail"])
+
+
+def test_read_only_diagnostic_loader_may_return_stale_ohlcv(monkeypatch):
+    cached_frame = frame("2026-08-03", 20)
+    cached_frame = cached_frame.loc[cached_frame.index <= pd.Timestamp("2026-08-28")]
+    row = pc.build_ohlcv_cache_row(
+        "PSAB.JK",
+        cached_frame,
+        period="5y",
+        provider="YAHOO",
+        checked_at="2026-08-29T09:34:00Z",
+    )
+    monkeypatch.setattr(pc, "read_ohlcv_cache", lambda *_: {"PSAB.JK": row})
+
+    frames, audit = pc.load_cached_ohlcv_frames(
+        config(),
+        ["PSAB"],
+        now="2026-09-03T10:00:00+07:00",
+        completed_only=False,
+    )
+    assert not frames["PSAB.JK"].empty
+    assert audit.iloc[0]["status"] == "CACHE_LOAD"

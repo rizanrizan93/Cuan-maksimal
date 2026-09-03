@@ -543,8 +543,10 @@ def _load_fast_features_cache_first(
     scan_id: str = "",
 ) -> tuple[pd.DataFrame, dict[str, pd.DataFrame], pd.DataFrame, list[dict[str, Any]]]:
     tickers = universe.get("ticker", pd.Series(dtype=str)).astype(str).tolist()
-    benchmark_last_date = benchmark.index.max().date().isoformat() if isinstance(benchmark, pd.DataFrame) and not benchmark.empty else None
-    cached, feature_audit = load_cached_market_features(config, tickers, now=now, expected_session_date=benchmark_last_date)
+    # Never let a stale benchmark lower the freshness requirement for every ticker.
+    # Market-feature cache is validated against the independently expected completed
+    # IDX session derived from 'now'.
+    cached, feature_audit = load_cached_market_features(config, tickers, now=now)
     hit = set(cached.get("ticker", pd.Series(dtype=str)).astype(str)) if not cached.empty else set()
     missing = [ticker for ticker in tickers if ticker not in hit]
     fallback_frames: dict[str, pd.DataFrame] = {}
@@ -818,7 +820,13 @@ def _process_cache_stage(
             completed_only=bool(settings.get("completed_only", True)), now=now,
             force_refresh=bool(settings.get("force_cache_refresh", False)), last_scan_id=str(job.get("scan_id")),
         )
-        success_tickers = {ticker for ticker, frame in frames.items() if not frame.empty}
+        current_statuses = {"CACHE_HIT", "INCREMENTAL_REFRESH", "COLD_REFRESH"}
+        if isinstance(audit, pd.DataFrame) and not audit.empty and "status" in audit.columns:
+            success_tickers = set(
+                audit.loc[audit["status"].astype(str).isin(current_statuses), "ticker"].astype(str)
+            )
+        else:
+            success_tickers = set()
         chunk = ["^JKSE"]; next_offset = 1; done = True
     elif stage == "OHLCV":
         force_refresh = bool(settings.get("force_cache_refresh", False))
@@ -827,9 +835,8 @@ def _process_cache_stage(
             completed_only=bool(settings.get("completed_only", True)),
         )
         benchmark = benchmark_frames.get("^JKSE", pd.DataFrame())
-        benchmark_last_date = benchmark.index.max().date().isoformat() if not benchmark.empty else None
         cached_features, feature_audit = load_cached_market_features(
-            config, chunk, now=now, force_refresh=force_refresh, expected_session_date=benchmark_last_date,
+            config, chunk, now=now, force_refresh=force_refresh,
         )
         feature_hits = set(cached_features.get("ticker", pd.Series(dtype=str)).astype(str)) if not cached_features.empty else set()
         missing = [ticker for ticker in chunk if ticker not in feature_hits]
@@ -841,10 +848,21 @@ def _process_cache_stage(
                 max_workers=int(settings.get("workers") or 3), completed_only=bool(settings.get("completed_only", True)),
                 now=now, force_refresh=force_refresh, last_scan_id=str(job.get("scan_id")),
             )
+            current_statuses = {"CACHE_HIT", "INCREMENTAL_REFRESH", "COLD_REFRESH"}
+            current_tickers: set[str] = set()
             if isinstance(ohlcv_audit, pd.DataFrame) and not ohlcv_audit.empty:
                 audits.append(ohlcv_audit)
+                if "status" in ohlcv_audit.columns and "ticker" in ohlcv_audit.columns:
+                    current_tickers = set(
+                        ohlcv_audit.loc[
+                            ohlcv_audit["status"].astype(str).isin(current_statuses),
+                            "ticker",
+                        ].astype(str)
+                    )
             for ticker, frame in frames.items():
-                if frame.empty:
+                if frame.empty or ticker not in current_tickers:
+                    # STALE_CACHE_FALLBACK remains auditable evidence but cannot
+                    # become current technical geometry or a market-feature cache hit.
                     continue
                 features = calculate_market_features(frame, benchmark, as_of=now)
                 if str(features.get("feature_state") or "") == "OK":

@@ -62,3 +62,18 @@ def test_fast_ranking_recall_lane_is_cache_only():
     assert "fetch_fundamental_cache_first(" not in fast_block
     assert "fetch_ksei_cache_first(" not in fast_block
     assert "fetch_news_cache_first(" not in fast_block
+
+
+def test_market_feature_freshness_is_not_anchored_to_stale_benchmark():
+    source = (ROOT / "resumable_scan.py").read_text()
+    assert "expected_session_date=benchmark_last_date" not in source
+    assert "benchmark_last_date = benchmark.index.max()" not in source
+    assert "load_cached_market_features(config, tickers, now=now)" in source
+    assert "load_cached_market_features(\n            config, chunk, now=now, force_refresh=force_refresh,\n        )" in source
+
+
+def test_stale_ohlcv_fallback_cannot_become_current_market_features():
+    source = (ROOT / "resumable_scan.py").read_text()
+    assert 'current_statuses = {"CACHE_HIT", "INCREMENTAL_REFRESH", "COLD_REFRESH"}' in source
+    assert "if frame.empty or ticker not in current_tickers:" in source
+    assert "STALE_CACHE_FALLBACK remains auditable evidence" in source
