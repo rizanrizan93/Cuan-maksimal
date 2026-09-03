@@ -575,12 +575,16 @@ def _load_fast_features_cache_first(
 DEEP_REVIEW_SCOPES = {
     "FAST_TOP_30": 30,
     "BALANCED_TOP_60": 60,
-    "DAILY_RECALL_80": 80,
+    "DAILY_RECALL_150": 150,
     "ALL_ELIGIBLE": None,
     "CUSTOM_LIMIT": -1,
 }
-DAILY_RECALL_PRIMARY_LIMIT = 55
-DAILY_RECALL_MAX = 80
+DAILY_RECALL_PRIMARY_LIMIT = 100
+DAILY_RECALL_FUNDAMENTAL_LIMIT = 20
+DAILY_RECALL_SMART_MONEY_LIMIT = 12
+DAILY_RECALL_STRUCTURE_LIMIT = 10
+DAILY_RECALL_REVERSAL_LIMIT = 8
+DAILY_RECALL_MAX = 150
 
 
 def _fundamental_recall_order(
@@ -658,12 +662,13 @@ def choose_shortlist(
     sector_map: Mapping[str, Mapping[str, Any]],
     scan_mode: str,
     deep_limit: int,
-    deep_review_scope: str = "DAILY_RECALL_80",
+    deep_review_scope: str = "DAILY_RECALL_150",
     fundamental_recall: pd.DataFrame | None = None,
+    selection_reasons: dict[str, str] | None = None,
 ) -> list[str]:
     """Return the ordered progressive deep-review universe.
 
-    All candidates first pass the cheap OHLCV integrity gate. DAILY_RECALL_80 is the
+    All candidates first pass the cheap OHLCV integrity gate. DAILY_RECALL_150 is the
     production daily policy: retain a broad technical core, then reserve recall slots
     for cached growth/turnaround evidence and distinct smart-money/structure/reversal
     leaders. The cache lane is additive only; missing fundamental evidence never
@@ -695,21 +700,21 @@ def choose_shortlist(
         na_position="last",
     )["ticker"].tolist()
 
-    scope = str(deep_review_scope or "DAILY_RECALL_80").upper()
+    scope = str(deep_review_scope or "DAILY_RECALL_150").upper()
     if scan_mode == "EMIR_AUTONOMOUS_DEEP_REVIEW" or scope == "ALL_ELIGIBLE":
         return ordered
     if scope == "FAST_TOP_30":
         return ordered[: min(30, len(ordered))]
     if scope == "BALANCED_TOP_60":
         return ordered[: min(60, len(ordered))]
-    if scope == "DAILY_RECALL_80":
+    if scope == "DAILY_RECALL_150":
         cap = min(DAILY_RECALL_MAX, len(ordered))
         if cap <= 0:
             return []
         selected: list[str] = []
         seen: set[str] = set()
 
-        def extend(values: Iterable[str], limit: int | None = None) -> None:
+        def extend(values: Iterable[str], reason: str, limit: int | None = None) -> None:
             added = 0
             for ticker in values:
                 ticker = normalize_ticker(ticker)
@@ -717,24 +722,29 @@ def choose_shortlist(
                     continue
                 seen.add(ticker)
                 selected.append(ticker)
+                if selection_reasons is not None:
+                    selection_reasons[ticker] = reason
                 added += 1
                 if len(selected) >= cap or (limit is not None and added >= limit):
                     break
 
-        extend(ordered[: min(DAILY_RECALL_PRIMARY_LIMIT, len(ordered))])
+        extend(
+            ordered[: min(DAILY_RECALL_PRIMARY_LIMIT, len(ordered))],
+            "CORE_RANK",
+        )
 
         fundamental_order = _fundamental_recall_order(
             fundamental_recall,
             set(eligible["ticker"].astype(str)),
         )
-        extend(fundamental_order, 10)
+        extend(fundamental_order, "FUNDAMENTAL_RECALL", DAILY_RECALL_FUNDAMENTAL_LIMIT)
 
         smart_lane = eligible.sort_values(
             ["smart_money_score", "liquidity_score", "emir_discovery_score"],
             ascending=[False, False, False],
             na_position="last",
         )["ticker"].tolist()
-        extend(smart_lane, 6)
+        extend(smart_lane, "SMART_MONEY_RECALL", DAILY_RECALL_SMART_MONEY_LIMIT)
 
         structure = eligible.copy()
         structure["_structure_recall"] = (
@@ -746,7 +756,7 @@ def choose_shortlist(
             ascending=[False, False],
             na_position="last",
         )["ticker"].tolist()
-        extend(structure_lane, 5)
+        extend(structure_lane, "STRUCTURE_RECALL", DAILY_RECALL_STRUCTURE_LIMIT)
 
         reversal = eligible.copy()
         reversal["_reversal_recall"] = (
@@ -758,9 +768,11 @@ def choose_shortlist(
             ascending=[False, False],
             na_position="last",
         )["ticker"].tolist()
-        extend(reversal_lane, 4)
+        extend(reversal_lane, "REVERSAL_RECALL", DAILY_RECALL_REVERSAL_LIMIT)
 
-        extend(ordered)
+        # Lane overlap is expected. Any remaining capacity is filled from the
+        # canonical discovery ranking so the shortlist remains deterministic.
+        extend(ordered, "CORE_RANK_FILL")
         return selected[:cap]
 
     limit = max(1, int(deep_limit or 30))
@@ -984,7 +996,7 @@ def process_next_job_step(config: DatabaseConfig, job: Mapping[str, Any], *, now
     if stage in {"BENCHMARK", "OHLCV", "KSEI_SHORTLIST", "NEWS_SHORTLIST", "FUNDAMENTAL_SHORTLIST", "IDX_FUNDAMENTAL_SHORTLIST"}:
         if stage == "BENCHMARK": stage_tickers = ["^JKSE"]
         elif stage == "OHLCV": stage_tickers = tickers
-        elif stage == "IDX_FUNDAMENTAL_SHORTLIST": stage_tickers = shortlist[: max(1, int(settings.get("official_fundamental_limit") or 400))]
+        elif stage == "IDX_FUNDAMENTAL_SHORTLIST": stage_tickers = shortlist[: max(1, int(settings.get("official_fundamental_limit") or 150))]
         else: stage_tickers = shortlist
         updated, report = _process_cache_stage(config, job, stage=stage, tickers=stage_tickers, now=now)
         return updated, report, None
@@ -1009,13 +1021,15 @@ def process_next_job_step(config: DatabaseConfig, job: Mapping[str, Any], *, now
         cached_fundamental_recall, fundamental_recall_audit = load_cached_fundamentals(
             config, eligible_tickers
         )
+        shortlist_selection_reasons: dict[str, str] = {}
         shortlist = choose_shortlist(
             context["fast"],
             context["sector_map"],
             str(settings.get("scan_mode")),
             int(settings.get("deep_limit") or 30),
-            str(settings.get("deep_review_scope") or "DAILY_RECALL_80"),
+            str(settings.get("deep_review_scope") or "DAILY_RECALL_150"),
             fundamental_recall=cached_fundamental_recall,
+            selection_reasons=shortlist_selection_reasons,
         )
         chunk_no = int(job.get("current_chunk") or 0) + 1
         record_job_chunk(
@@ -1026,10 +1040,15 @@ def process_next_job_step(config: DatabaseConfig, job: Mapping[str, Any], *, now
             payload={
                 "shortlist": shortlist,
                 "shortlist_count": len(shortlist),
-                "deep_review_scope": str(settings.get("deep_review_scope") or "DAILY_RECALL_80"),
+                "shortlist_selection_reasons": shortlist_selection_reasons,
+                "shortlist_selection_reason_counts": {
+                    reason: int(sum(1 for value in shortlist_selection_reasons.values() if value == reason))
+                    for reason in sorted(set(shortlist_selection_reasons.values()))
+                },
+                "deep_review_scope": str(settings.get("deep_review_scope") or "DAILY_RECALL_150"),
                 "eligible_count": int(context["fast"].get("feature_state", pd.Series(dtype=str)).eq("OK").sum()),
                 "cached_fundamental_recall_rows": int(len(cached_fundamental_recall)),
-                "shortlist_policy": "DAILY_RECALL_80_CACHE_AWARE" if str(settings.get("deep_review_scope") or "DAILY_RECALL_80").upper() == "DAILY_RECALL_80" else "EXPLICIT_SCOPE",
+                "shortlist_policy": "DAILY_RECALL_150_CACHE_AWARE" if str(settings.get("deep_review_scope") or "DAILY_RECALL_150").upper() == "DAILY_RECALL_150" else "EXPLICIT_SCOPE",
                 "audit_records": [
                     *_checkpoint_audit_records(load_audit),
                     *_checkpoint_audit_records(benchmark_audit),
@@ -1137,7 +1156,7 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
     # Provider refresh is bounded to shortlist, but final scoring reuses any
     # already-persisted fundamental evidence across the full universe.
     fundamental_proxy_frame, fundamental_load_audit = load_cached_fundamentals(config, tickers)
-    official_limit = max(1, int(settings.get("official_fundamental_limit") or 80))
+    official_limit = max(1, int(settings.get("official_fundamental_limit") or 150))
     official_tickers = shortlist[:official_limit]
     official_fundamental_frame, official_fundamental_load_audit = load_cached_idx_official_fundamentals(config, tickers)
     # Preserve ticker inside each payload. pandas set_index(...).to_dict(orient="index")

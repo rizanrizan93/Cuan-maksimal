@@ -410,7 +410,7 @@ with st.sidebar:
     deep_scope_label = st.selectbox(
         "Cakupan deep review",
         [
-            "Optimal harian — Recall 80",
+            "Optimal harian — Recall 150",
             "Seimbang — Top 60",
             "Cepat — Top 30",
             "Semua ticker eligible (full deep refresh)",
@@ -419,13 +419,14 @@ with st.sidebar:
         index=0,
         disabled=scan_mode == "EMIR_FLOW_RADAR_ONLY",
         help=(
-            "Recall 80 adalah default harian: seluruh universe tetap diranking, tetapi provider mahal hanya "
-            "memperdalam sekitar 80 kandidat dengan buffer smart-money/structure/reversal + growth/turnaround cache. "
-            "Full deep refresh tetap tersedia bila memang ingin memperbarui semua ticker."
+            "Recall 150 adalah default harian: seluruh universe tetap diranking. Deep review mengambil 100 core "
+            "berdasarkan Emir discovery rank, lalu menambah hingga 20 growth/turnaround fundamental recall, "
+            "12 smart-money/liquidity, 10 structure/absorption, dan 8 reversal/seller-exhaustion. "
+            "Overlap antar-lane diisi kembali dari discovery rank sampai maksimal 150. Full deep refresh tetap tersedia."
         ),
     )
     deep_review_scope = {
-        "Optimal harian — Recall 80": "DAILY_RECALL_80",
+        "Optimal harian — Recall 150": "DAILY_RECALL_150",
         "Seimbang — Top 60": "BALANCED_TOP_60",
         "Cepat — Top 30": "FAST_TOP_30",
         "Semua ticker eligible (full deep refresh)": "ALL_ELIGIBLE",
@@ -449,10 +450,10 @@ with st.sidebar:
         "Batas IDX official deep review",
         10,
         500,
-        80,
+        150,
         10,
         disabled=not auto_idx_official_fundamental or scan_mode == "EMIR_FLOW_RADAR_ONLY",
-        help="Default harian 80. Gunakan 400 hanya untuk full deep refresh terencana; cache official yang sudah ada tetap dipakai ulang untuk seluruh universe.",
+        help="Default harian 150. Gunakan 400 hanya untuk full deep refresh terencana; cache official yang sudah ada tetap dipakai ulang untuk seluruh universe.",
     )
     force_cache_refresh = st.checkbox("Paksa refresh cache", value=False)
     capital_mode = st.selectbox("Capital mode", ["GUARDED_REAL_MONEY", "RESEARCH"], index=0)
@@ -514,7 +515,7 @@ if universe.empty:
 tickers = universe["ticker"].tolist()
 universe_fingerprint = universe_hash(universe)
 st.write(f"Universe terdeteksi: **{len(tickers)} ticker unik**")
-st.caption("OHLCV dan ranking tetap mencakup seluruh universe. Default Recall 80 membatasi live deep enrichment tanpa membuang evidence cache yang sudah tersedia.")
+st.caption("OHLCV dan ranking tetap mencakup seluruh universe. Default Recall 150 membatasi live deep enrichment tanpa membuang evidence cache yang sudah tersedia.")
 
 preflight = st.session_state.get("emir_db_preflight")
 if not isinstance(preflight, pd.DataFrame):
@@ -684,7 +685,7 @@ if active_job:
         current_stage = str(active_job.get("current_stage") or "")
         deep_stage_offset = int(active_job.get("current_offset") or 0) if current_stage in {"KSEI_SHORTLIST", "NEWS_SHORTLIST", "FUNDAMENTAL_SHORTLIST", "IDX_FUNDAMENTAL_SHORTLIST"} else 0
         progress_cols = st.columns(3)
-        active_stage_target = min(len(job_shortlist), int((active_job.get("settings") or {}).get("official_fundamental_limit") or 400)) if current_stage == "IDX_FUNDAMENTAL_SHORTLIST" else len(job_shortlist)
+        active_stage_target = min(len(job_shortlist), int((active_job.get("settings") or {}).get("official_fundamental_limit") or 150)) if current_stage == "IDX_FUNDAMENTAL_SHORTLIST" else len(job_shortlist)
         progress_cols[0].metric("Target deep review", len(job_shortlist))
         progress_cols[1].metric("Progress stage aktif", min(deep_stage_offset, active_stage_target))
         progress_cols[2].metric("Scope", str((active_job.get("settings") or {}).get("deep_review_scope") or "ALL_ELIGIBLE"))

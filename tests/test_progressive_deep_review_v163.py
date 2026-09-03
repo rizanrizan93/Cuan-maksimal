@@ -45,7 +45,7 @@ def test_all_eligible_progressive_scope_reviews_every_valid_ticker():
 
 
 def test_fast_balanced_and_custom_scopes_are_bounded():
-    fast = _fast_frame(120, failed=0)
+    fast = _fast_frame(220, failed=0)
     assert len(choose_shortlist(fast, {}, "EMIR_AUTONOMOUS_HYBRID_400_TO_DEEP", 100, "FAST_TOP_30")) == 30
     assert len(choose_shortlist(fast, {}, "EMIR_AUTONOMOUS_HYBRID_400_TO_DEEP", 100, "BALANCED_TOP_60")) == 60
     assert len(choose_shortlist(fast, {}, "EMIR_AUTONOMOUS_HYBRID_400_TO_DEEP", 75, "CUSTOM_LIMIT")) == 75
@@ -196,10 +196,10 @@ def test_dashboard_scores_are_in_radar_database_payload(monkeypatch):
     assert payload["dashboard_recommendation"] == "WAIT NARRATIVE"
 
 
-def test_daily_recall_80_is_bounded_and_preserves_growth_turnaround_recall():
-    fast = _fast_frame(120, failed=0)
+def test_daily_recall_150_is_bounded_and_preserves_growth_turnaround_recall():
+    fast = _fast_frame(220, failed=0)
     # Put a technically lower-ranked name well outside the primary 55-name core.
-    rescue = "T110.JK"
+    rescue = "T210.JK"
     fundamentals = pd.DataFrame([{
         "ticker": rescue,
         "fundamental_raw_score": 78.0,
@@ -217,25 +217,25 @@ def test_daily_recall_80_is_bounded_and_preserves_growth_turnaround_recall():
         sector_map={},
         scan_mode="EMIR_AUTONOMOUS_HYBRID_400_TO_DEEP",
         deep_limit=100,
-        deep_review_scope="DAILY_RECALL_80",
+        deep_review_scope="DAILY_RECALL_150",
         fundamental_recall=fundamentals,
     )
-    assert len(shortlist) == 80
+    assert len(shortlist) == 150
     assert rescue in shortlist
     assert len(shortlist) == len(set(shortlist))
 
 
-def test_daily_recall_80_does_not_require_fundamental_data():
-    fast = _fast_frame(120, failed=4)
+def test_daily_recall_150_does_not_require_fundamental_data():
+    fast = _fast_frame(220, failed=4)
     shortlist = choose_shortlist(
         fast,
         sector_map={},
         scan_mode="EMIR_AUTONOMOUS_HYBRID_400_TO_DEEP",
         deep_limit=100,
-        deep_review_scope="DAILY_RECALL_80",
+        deep_review_scope="DAILY_RECALL_150",
         fundamental_recall=pd.DataFrame(),
     )
-    assert len(shortlist) == 80
+    assert len(shortlist) == 150
     assert all(ticker not in shortlist for ticker in ["T000.JK", "T001.JK", "T002.JK", "T003.JK"])
 
 
@@ -251,10 +251,48 @@ def test_explicit_full_deep_refresh_still_reviews_every_eligible_ticker():
     assert len(shortlist) == 117
 
 
-def test_dashboard_defaults_to_recall_80_not_all_eligible():
+def test_dashboard_defaults_to_recall_150_not_all_eligible():
     source = (ROOT / "app.py").read_text()
-    assert '"Optimal harian — Recall 80"' in source
-    assert '"Optimal harian — Recall 80": "DAILY_RECALL_80"' in source
+    assert '"Optimal harian — Recall 150"' in source
+    assert '"Optimal harian — Recall 150": "DAILY_RECALL_150"' in source
     assert '"Semua ticker eligible (full deep refresh)": "ALL_ELIGIBLE"' in source
     assert '"Batas IDX official deep review"' in source
-    assert "\n        80,\n        10," in source
+    assert "\n        150,\n        10," in source
+
+
+def test_daily_recall_150_records_selection_lane_reasons():
+    fast = _fast_frame(220, failed=0)
+    rescue = "T210.JK"
+    fundamentals = pd.DataFrame([{
+        "ticker": rescue,
+        "fundamental_raw_score": 82.0,
+        "fundamental_conversion_score": 84.0,
+        "revenue_growth_yoy_pct": 32.0,
+        "earnings_growth_yoy_pct": 48.0,
+        "roe_ttm_pct": 20.0,
+        "fundamental_solvency_score": 90.0,
+        "fundamental_data_quality_score": 88.0,
+        "fundamental_state": "FUTURE_FUNDAMENTAL_SUPPORTIVE",
+        "earnings_growth_yoy_state": "NORMAL",
+    }])
+    reasons = {}
+    shortlist = choose_shortlist(
+        fast,
+        sector_map={},
+        scan_mode="EMIR_AUTONOMOUS_HYBRID_400_TO_DEEP",
+        deep_limit=150,
+        deep_review_scope="DAILY_RECALL_150",
+        fundamental_recall=fundamentals,
+        selection_reasons=reasons,
+    )
+    assert len(shortlist) == 150
+    assert reasons[rescue] == "FUNDAMENTAL_RECALL"
+    assert set(reasons).issubset(set(shortlist))
+    assert set(reasons.values()).issubset({
+        "CORE_RANK",
+        "FUNDAMENTAL_RECALL",
+        "SMART_MONEY_RECALL",
+        "STRUCTURE_RECALL",
+        "REVERSAL_RECALL",
+        "CORE_RANK_FILL",
+    })
