@@ -1,0 +1,46 @@
+name: Phase 5.6 shared fundamental cache mirror - Emir
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "tools/phase5_6_mirror_shared_fundamentals_to_emir.py"
+      - ".github/workflows/shared-fundamental-cache-mirror.yml"
+  workflow_dispatch:
+  schedule:
+    - cron: "15 19 * * 1-5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: phase5-6-shared-fundamental-cache-mirror-emir
+  cancel-in-progress: true
+
+env:
+  PYTHONPATH: ${{ github.workspace }}
+  PYTHONDONTWRITEBYTECODE: "1"
+  CAK_DATABASE_ENABLED: "true"
+  CAK_DATABASE_SCHEMA: "public"
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SHARED_EVIDENCE_SUPABASE_URL: ${{ secrets.SHARED_EVIDENCE_SUPABASE_URL }}
+      SHARED_EVIDENCE_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SHARED_EVIDENCE_SUPABASE_SERVICE_ROLE_KEY }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install runtime dependencies
+        run: pip install -r requirements.txt
+      - name: Mirror shared factual fundamentals into native EMIR cache
+        run: python tools/phase5_6_mirror_shared_fundamentals_to_emir.py
