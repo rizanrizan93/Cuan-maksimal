@@ -61,3 +61,44 @@ def test_create_job_settings_nan_are_json_safe(monkeypatch):
         settings={"manual_events": [{"score": float("nan")}]},
     )
     assert job["settings"]["manual_events"][0]["score"] is None
+
+
+def test_find_unique_active_job_recovers_only_unambiguous_current_job(monkeypatch):
+    import scan_jobs as sj
+    from persistence import DatabaseConfig
+
+    config = DatabaseConfig(True, "https://x.supabase.co", "sb_secret_x", key_type="SECRET")
+    calls = []
+
+    class Response:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def json(self):
+            return self.rows
+
+    rows = [{
+        "scan_id": "active-1",
+        "scanner_version": sj.JOB_VERSION,
+        "status": "RUNNING",
+        "universe": [{"ticker": "BBCA.JK"}],
+        "settings": {"engine_version": sj.JOB_VERSION},
+        "shortlist": [],
+        "failures": {},
+        "result_summary": {},
+    }]
+
+    def fake_request(config_arg, method, table, **kwargs):
+        calls.append((method, table, kwargs))
+        return Response(rows)
+
+    monkeypatch.setattr(sj, "_request", fake_request)
+    job = sj.find_unique_active_job(config)
+    assert job and job["scan_id"] == "active-1"
+    params = calls[0][2]["params"]
+    assert params["scanner_version"] == f"eq.{sj.JOB_VERSION}"
+    assert params["status"].startswith("in.(")
+    assert params["limit"] == "2"
+
+    rows.append({**rows[0], "scan_id": "active-2"})
+    assert sj.find_unique_active_job(config) is None
