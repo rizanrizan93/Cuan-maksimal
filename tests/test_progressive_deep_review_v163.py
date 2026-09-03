@@ -194,3 +194,67 @@ def test_dashboard_scores_are_in_radar_database_payload(monkeypatch):
     assert payload["dashboard_flow_score"] == 77.0
     assert payload["dashboard_silent_accum_score"] == 74.0
     assert payload["dashboard_recommendation"] == "WAIT NARRATIVE"
+
+
+def test_daily_recall_80_is_bounded_and_preserves_growth_turnaround_recall():
+    fast = _fast_frame(120, failed=0)
+    # Put a technically lower-ranked name well outside the primary 55-name core.
+    rescue = "T110.JK"
+    fundamentals = pd.DataFrame([{
+        "ticker": rescue,
+        "fundamental_raw_score": 78.0,
+        "fundamental_conversion_score": 80.0,
+        "revenue_growth_yoy_pct": 28.0,
+        "earnings_growth_yoy_pct": 45.0,
+        "roe_ttm_pct": 18.0,
+        "fundamental_solvency_score": 88.0,
+        "fundamental_data_quality_score": 84.0,
+        "fundamental_state": "FUTURE_FUNDAMENTAL_SUPPORTIVE",
+        "earnings_growth_yoy_state": "NORMAL",
+    }])
+    shortlist = choose_shortlist(
+        fast,
+        sector_map={},
+        scan_mode="EMIR_AUTONOMOUS_HYBRID_400_TO_DEEP",
+        deep_limit=100,
+        deep_review_scope="DAILY_RECALL_80",
+        fundamental_recall=fundamentals,
+    )
+    assert len(shortlist) == 80
+    assert rescue in shortlist
+    assert len(shortlist) == len(set(shortlist))
+
+
+def test_daily_recall_80_does_not_require_fundamental_data():
+    fast = _fast_frame(120, failed=4)
+    shortlist = choose_shortlist(
+        fast,
+        sector_map={},
+        scan_mode="EMIR_AUTONOMOUS_HYBRID_400_TO_DEEP",
+        deep_limit=100,
+        deep_review_scope="DAILY_RECALL_80",
+        fundamental_recall=pd.DataFrame(),
+    )
+    assert len(shortlist) == 80
+    assert all(ticker not in shortlist for ticker in ["T000.JK", "T001.JK", "T002.JK", "T003.JK"])
+
+
+def test_explicit_full_deep_refresh_still_reviews_every_eligible_ticker():
+    fast = _fast_frame(120, failed=3)
+    shortlist = choose_shortlist(
+        fast,
+        sector_map={},
+        scan_mode="EMIR_AUTONOMOUS_HYBRID_400_TO_DEEP",
+        deep_limit=80,
+        deep_review_scope="ALL_ELIGIBLE",
+    )
+    assert len(shortlist) == 117
+
+
+def test_dashboard_defaults_to_recall_80_not_all_eligible():
+    source = (ROOT / "app.py").read_text()
+    assert '"Optimal harian — Recall 80"' in source
+    assert '"Optimal harian — Recall 80": "DAILY_RECALL_80"' in source
+    assert '"Semua ticker eligible (full deep refresh)": "ALL_ELIGIBLE"' in source
+    assert '"Batas IDX official deep review"' in source
+    assert "\n        80,\n        10," in source

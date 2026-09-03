@@ -41,3 +41,24 @@ def test_pause_and_auto_continue_are_persisted_to_job_status():
     assert '{"status": "PAUSED", "last_error": ""}' in source
     assert '{"status": "RUNNING", "last_error": ""}' in source
     assert "update_scan_job(" in source
+
+
+def test_daily_deep_provider_budget_is_shortlist_bounded_but_final_fundamentals_reuse_full_cache():
+    source = (ROOT / "resumable_scan.py").read_text()
+    assert '"DAILY_RECALL_80": 80' in source
+    assert "DAILY_RECALL_PRIMARY_LIMIT = 55" in source
+    assert "DAILY_RECALL_MAX = 80" in source
+    assert 'stage_tickers = shortlist' in source
+    assert 'stage_tickers = shortlist[: max(1, int(settings.get("official_fundamental_limit") or 400))]' in source
+    assert "load_cached_fundamentals(config, tickers)" in source
+    assert "load_cached_idx_official_fundamentals(config, tickers)" in source
+    assert "for ticker in tickers:" in source
+
+
+def test_fast_ranking_recall_lane_is_cache_only():
+    source = (ROOT / "resumable_scan.py").read_text()
+    fast_block = source[source.index('if stage == "FAST_RANKING":'):source.index('if stage == "FINALIZE":')]
+    assert "load_cached_fundamentals(" in fast_block
+    assert "fetch_fundamental_cache_first(" not in fast_block
+    assert "fetch_ksei_cache_first(" not in fast_block
+    assert "fetch_news_cache_first(" not in fast_block
