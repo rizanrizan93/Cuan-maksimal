@@ -816,11 +816,17 @@ def load_cached_ohlcv_frames(
     now: Any = None,
     completed_only: bool = True,
 ) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
-    """Read-only cache load used by resumable finalisation. It never calls an external provider."""
+    """Read-only cache load used by resumable finalisation. It never calls an external provider.
+
+    In completed-session mode, stale bars are NOT returned as current technical input.
+    They remain visible in audit telemetry only. This prevents a failed live refresh
+    from silently propagating old price geometry into ranking/finalisation.
+    """
     symbols = list(dict.fromkeys(normalize_ticker(ticker) for ticker in tickers if normalize_ticker(ticker)))
     rows = read_ohlcv_cache(config, symbols)
     frames: dict[str, pd.DataFrame] = {}
     audits: list[dict[str, Any]] = []
+    expected = _expected_completed_weekday(now) if completed_only else None
     for symbol in symbols:
         row = rows.get(symbol)
         if not row:
@@ -832,6 +838,16 @@ def load_cached_ohlcv_frames(
         frame = completed_session_frame(trim_period(payload_to_frame(row.get("payload")), period, now), now=now, completed_only=completed_only)
         if frame.empty:
             audits.append(_audit_row(symbol, "SUPABASE_OHLCV_CACHE", "CACHE_EMPTY", frame, "No valid cached bars."))
+            continue
+        latest = frame.index.max().normalize()
+        if completed_only and expected is not None and latest < expected:
+            audits.append(_audit_row(
+                symbol,
+                "SUPABASE_OHLCV_CACHE",
+                "CACHE_STALE_NO_PROVIDER_CALL",
+                frame,
+                f"latest={latest.date().isoformat()}; expected={expected.date().isoformat()}; read-only stale evidence excluded",
+            ))
             continue
         frames[symbol] = frame
         audits.append(_audit_row(symbol, "SUPABASE_OHLCV_CACHE", "CACHE_LOAD", frame, f"age_hours={_cache_age_hours(row, now):.2f}"))
