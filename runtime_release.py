@@ -51,6 +51,7 @@ def _install_integrity_patch(expected: str) -> None:
     _try_optional_patch("top3_lane_patch", "install")
     _try_optional_patch("execution_research_top3_runtime_patch", "install")
     _try_optional_patch("shared_fundamental_runtime_patch", "install")
+    _try_optional_patch("shared_fundamental_scan_binding_patch", "install")
 
 
 def refresh_release_runtime(
