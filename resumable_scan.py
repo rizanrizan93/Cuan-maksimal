@@ -573,9 +573,82 @@ def _load_fast_features_cache_first(
 DEEP_REVIEW_SCOPES = {
     "FAST_TOP_30": 30,
     "BALANCED_TOP_60": 60,
+    "DAILY_RECALL_80": 80,
     "ALL_ELIGIBLE": None,
     "CUSTOM_LIMIT": -1,
 }
+DAILY_RECALL_PRIMARY_LIMIT = 55
+DAILY_RECALL_MAX = 80
+
+
+def _fundamental_recall_order(
+    frame: pd.DataFrame | None,
+    eligible_tickers: set[str],
+) -> list[str]:
+    """Cache-only positive recall lane.
+
+    This lane may ADD a ticker to deep review but never removes or penalizes one.
+    Missing fundamental fields contribute nothing; observed weak data is not used
+    as an exclusion gate here because final scoring/gating owns that decision.
+    """
+    if not isinstance(frame, pd.DataFrame) or frame.empty or "ticker" not in frame.columns:
+        return []
+    local = frame.copy()
+    local["ticker"] = local["ticker"].map(normalize_ticker)
+    local = local[local["ticker"].isin(eligible_tickers)].drop_duplicates("ticker", keep="last")
+    if local.empty:
+        return []
+
+    def number(row: pd.Series, key: str) -> float | None:
+        value = pd.to_numeric(pd.Series([row.get(key)]), errors="coerce").iloc[0]
+        return float(value) if np.isfinite(value) else None
+
+    records: list[tuple[str, float]] = []
+    for _, row in local.iterrows():
+        observed: list[float] = []
+        raw_score = number(row, "fundamental_raw_score")
+        if raw_score is not None:
+            observed.append(float(np.clip(raw_score, 0.0, 100.0)))
+        conversion = number(row, "fundamental_conversion_score")
+        if conversion is not None:
+            observed.append(float(np.clip(conversion, 0.0, 100.0)))
+        revenue_yoy = number(row, "revenue_growth_yoy_pct")
+        if revenue_yoy is not None:
+            observed.append(float(np.clip(50.0 + revenue_yoy, 0.0, 100.0)))
+        earnings_yoy = number(row, "earnings_growth_yoy_pct")
+        if earnings_yoy is not None:
+            observed.append(float(np.clip(50.0 + 0.5 * earnings_yoy, 0.0, 100.0)))
+        roe = number(row, "roe_ttm_pct")
+        if roe is not None:
+            observed.append(float(np.clip(roe * 4.0, 0.0, 100.0)))
+        solvency = number(row, "fundamental_solvency_score")
+        if solvency is not None:
+            observed.append(float(np.clip(solvency, 0.0, 100.0)))
+        quality = number(row, "fundamental_data_quality_score")
+        if quality is not None:
+            observed.append(float(np.clip(quality, 0.0, 100.0)))
+
+        state = str(row.get("fundamental_state") or "").upper()
+        earnings_state = str(row.get("earnings_growth_yoy_state") or "").upper()
+        turnaround = any(token in earnings_state for token in ("LOSS_TO_PROFIT", "TURNAROUND", "RECOVERY"))
+        supportive = any(token in state for token in ("SUPPORTIVE", "STRONG"))
+        positive_observation = bool(
+            supportive
+            or turnaround
+            or (raw_score is not None and raw_score >= 65.0)
+            or (revenue_yoy is not None and revenue_yoy >= 15.0)
+            or (earnings_yoy is not None and earnings_yoy >= 20.0)
+        )
+        if not positive_observation or not observed:
+            continue
+        score = float(np.mean(observed))
+        if supportive:
+            score += 7.5
+        if turnaround:
+            score += 10.0
+        records.append((str(row["ticker"]), score))
+
+    return [ticker for ticker, _ in sorted(records, key=lambda item: (-item[1], item[0]))]
 
 
 def choose_shortlist(
@@ -583,13 +656,16 @@ def choose_shortlist(
     sector_map: Mapping[str, Mapping[str, Any]],
     scan_mode: str,
     deep_limit: int,
-    deep_review_scope: str = "ALL_ELIGIBLE",
+    deep_review_scope: str = "DAILY_RECALL_80",
+    fundamental_recall: pd.DataFrame | None = None,
 ) -> list[str]:
     """Return the ordered progressive deep-review universe.
 
-    All candidates first pass the cheap OHLCV integrity gate. ``ALL_ELIGIBLE`` keeps
-    every valid ticker and lets KSEI/news/fundamental stages process them in resumable
-    chunks. Fast/balanced/custom scopes remain available for shorter daily scans.
+    All candidates first pass the cheap OHLCV integrity gate. DAILY_RECALL_80 is the
+    production daily policy: retain a broad technical core, then reserve recall slots
+    for cached growth/turnaround evidence and distinct smart-money/structure/reversal
+    leaders. The cache lane is additive only; missing fundamental evidence never
+    removes a ticker. ALL_ELIGIBLE remains available for deliberate full deep refresh.
     """
     if fast.empty or "feature_state" not in fast.columns or scan_mode == "EMIR_FLOW_RADAR_ONLY":
         return []
@@ -617,13 +693,74 @@ def choose_shortlist(
         na_position="last",
     )["ticker"].tolist()
 
-    scope = str(deep_review_scope or "ALL_ELIGIBLE").upper()
+    scope = str(deep_review_scope or "DAILY_RECALL_80").upper()
     if scan_mode == "EMIR_AUTONOMOUS_DEEP_REVIEW" or scope == "ALL_ELIGIBLE":
         return ordered
     if scope == "FAST_TOP_30":
         return ordered[: min(30, len(ordered))]
     if scope == "BALANCED_TOP_60":
         return ordered[: min(60, len(ordered))]
+    if scope == "DAILY_RECALL_80":
+        cap = min(DAILY_RECALL_MAX, len(ordered))
+        if cap <= 0:
+            return []
+        selected: list[str] = []
+        seen: set[str] = set()
+
+        def extend(values: Iterable[str], limit: int | None = None) -> None:
+            added = 0
+            for ticker in values:
+                ticker = normalize_ticker(ticker)
+                if not ticker or ticker in seen:
+                    continue
+                seen.add(ticker)
+                selected.append(ticker)
+                added += 1
+                if len(selected) >= cap or (limit is not None and added >= limit):
+                    break
+
+        extend(ordered[: min(DAILY_RECALL_PRIMARY_LIMIT, len(ordered))])
+
+        fundamental_order = _fundamental_recall_order(
+            fundamental_recall,
+            set(eligible["ticker"].astype(str)),
+        )
+        extend(fundamental_order, 10)
+
+        smart_lane = eligible.sort_values(
+            ["smart_money_score", "liquidity_score", "emir_discovery_score"],
+            ascending=[False, False, False],
+            na_position="last",
+        )["ticker"].tolist()
+        extend(smart_lane, 6)
+
+        structure = eligible.copy()
+        structure["_structure_recall"] = (
+            pd.to_numeric(structure.get("market_structure_score"), errors="coerce")
+            + pd.to_numeric(structure.get("absorption_score"), errors="coerce")
+        ) / 2.0
+        structure_lane = structure.sort_values(
+            ["_structure_recall", "emir_discovery_score"],
+            ascending=[False, False],
+            na_position="last",
+        )["ticker"].tolist()
+        extend(structure_lane, 5)
+
+        reversal = eligible.copy()
+        reversal["_reversal_recall"] = (
+            pd.to_numeric(reversal.get("seller_exhaustion_score"), errors="coerce")
+            + pd.to_numeric(reversal.get("absorption_score"), errors="coerce")
+        ) / 2.0
+        reversal_lane = reversal.sort_values(
+            ["_reversal_recall", "emir_discovery_score"],
+            ascending=[False, False],
+            na_position="last",
+        )["ticker"].tolist()
+        extend(reversal_lane, 4)
+
+        extend(ordered)
+        return selected[:cap]
+
     limit = max(1, int(deep_limit or 30))
     return ordered[: min(limit, len(ordered))]
 
@@ -847,12 +984,20 @@ def process_next_job_step(config: DatabaseConfig, job: Mapping[str, Any], *, now
         context = compute_fast_context_from_features(universe, fast_features, benchmark, as_of=now)
         if feature_rows:
             persist_verify_cache_bundle(config, scan_id=str(job.get("scan_id")), ohlcv_rows=[], source_rows=feature_rows)
+        eligible_tickers = context["fast"].loc[
+            context["fast"].get("feature_state", pd.Series(dtype=str)).eq("OK"),
+            "ticker",
+        ].astype(str).tolist()
+        cached_fundamental_recall, fundamental_recall_audit = load_cached_fundamentals(
+            config, eligible_tickers
+        )
         shortlist = choose_shortlist(
             context["fast"],
             context["sector_map"],
             str(settings.get("scan_mode")),
             int(settings.get("deep_limit") or 30),
-            str(settings.get("deep_review_scope") or "ALL_ELIGIBLE"),
+            str(settings.get("deep_review_scope") or "DAILY_RECALL_80"),
+            fundamental_recall=cached_fundamental_recall,
         )
         chunk_no = int(job.get("current_chunk") or 0) + 1
         record_job_chunk(
@@ -863,9 +1008,15 @@ def process_next_job_step(config: DatabaseConfig, job: Mapping[str, Any], *, now
             payload={
                 "shortlist": shortlist,
                 "shortlist_count": len(shortlist),
-                "deep_review_scope": str(settings.get("deep_review_scope") or "ALL_ELIGIBLE"),
+                "deep_review_scope": str(settings.get("deep_review_scope") or "DAILY_RECALL_80"),
                 "eligible_count": int(context["fast"].get("feature_state", pd.Series(dtype=str)).eq("OK").sum()),
-                "audit_records": [*_checkpoint_audit_records(load_audit), *_checkpoint_audit_records(benchmark_audit)],
+                "cached_fundamental_recall_rows": int(len(cached_fundamental_recall)),
+                "shortlist_policy": "DAILY_RECALL_80_CACHE_AWARE" if str(settings.get("deep_review_scope") or "DAILY_RECALL_80").upper() == "DAILY_RECALL_80" else "EXPLICIT_SCOPE",
+                "audit_records": [
+                    *_checkpoint_audit_records(load_audit),
+                    *_checkpoint_audit_records(benchmark_audit),
+                    *_checkpoint_audit_records(fundamental_recall_audit),
+                ],
             },
         )
         next_stage = _next_deep_stage(settings, "FAST_RANKING", shortlist)
@@ -965,10 +1116,12 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
     persisted_narrative_events = load_replayable_narrative_events(
         config, shortlist, as_of=now, limit_per_ticker=6, max_age_days=540
     ) if config.ready else pd.DataFrame()
-    fundamental_proxy_frame, fundamental_load_audit = load_cached_fundamentals(config, shortlist)
-    official_limit = max(1, int(settings.get("official_fundamental_limit") or 400))
+    # Provider refresh is bounded to shortlist, but final scoring reuses any
+    # already-persisted fundamental evidence across the full universe.
+    fundamental_proxy_frame, fundamental_load_audit = load_cached_fundamentals(config, tickers)
+    official_limit = max(1, int(settings.get("official_fundamental_limit") or 80))
     official_tickers = shortlist[:official_limit]
-    official_fundamental_frame, official_fundamental_load_audit = load_cached_idx_official_fundamentals(config, official_tickers)
+    official_fundamental_frame, official_fundamental_load_audit = load_cached_idx_official_fundamentals(config, tickers)
     # Preserve ticker inside each payload. pandas set_index(...).to_dict(orient="index")
     # removes the index column from record values; reconcile_fundamental_snapshot needs
     # the ticker to key the reconciled result back into the final radar. Losing it here
@@ -989,7 +1142,7 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
     proxy_map = _fundamental_record_map(fundamental_proxy_frame)
     official_map = _fundamental_record_map(official_fundamental_frame)
     reconciled=[]
-    for ticker in shortlist:
+    for ticker in tickers:
         proxy_payload = dict(proxy_map.get(ticker) or {})
         official_payload = dict(official_map.get(ticker) or {})
         # Defensive fallback: even an incomplete cache payload must retain its join key.
