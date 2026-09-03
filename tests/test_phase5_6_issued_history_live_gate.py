@@ -48,3 +48,13 @@ def test_issued_history_consumer_auto_runs_on_relevant_main_merge() -> None:
     assert "tz=asia/jakarta date +%f" in workflow
     assert "zapi_key" not in workflow
     assert "schedule:" not in workflow
+
+
+def test_issued_history_consumer_tracks_shared_hub_readback() -> None:
+    workflow = (
+        Path(__file__).resolve().parents[1]
+        / ".github"
+        / "workflows"
+        / "capital-action-issued-history-live-validation.yml"
+    ).read_text(encoding="utf-8").lower()
+    assert '"shared_evidence_hub.py"' in workflow
