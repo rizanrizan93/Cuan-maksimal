@@ -802,9 +802,13 @@ def _card_html(row: Mapping[str, Any], rank: int) -> str:
     ticker = str(row.get("ticker", "")).replace(".JK", "")
     company = row.get("company_name") or ""
     sector = row.get("sector") or "SECTOR UNKNOWN"
-    change = _num(row.get("dashboard_price_change_pct"))
+    display_price = row.get("display_last_price", row.get("last_price"))
+    change = _num(row.get("display_price_change_pct", row.get("dashboard_price_change_pct")))
     change_class = "up" if np.isfinite(change) and change >= 0 else "down"
     change_text = _fmt_pct(change, signed=True)
+    price_note = str(row.get("display_price_note") or "")
+    technical_price_state = str(row.get("display_technical_freshness_state") or "")
+    price_note_class = "stale" if technical_price_state == "TECHNICAL_STALE_RESCAN_REQUIRED" else "current"
     confidence = "HIGH" if score >= 75 else "GOOD" if score >= 60 else "MODERATE" if score >= 45 else "LOW"
     badges = "".join(f'<span class="es-chip">{_esc(item)}</span>' for item in _risk_badges(row))
     reason_items = _reason_lines(row)
@@ -826,7 +830,7 @@ def _card_html(row: Mapping[str, Any], rank: int) -> str:
         <div class="es-identity"><h2>{_esc(ticker)}</h2><p>{_esc(company)}</p><em>{_esc(sector)}</em><div>{badges}</div></div>
         <div class="es-score"><span>FINAL SCORE</span><strong>{score:.0f}</strong><small>/100</small></div>
         <div class="es-rec {tone}"><span>REKOMENDASI</span><strong>{_esc(recommendation)}</strong><small>{_esc(recommendation_note)}</small></div>
-        <div class="es-price"><span>HARGA SAAT INI</span><strong>{_fmt_rupiah(row.get('last_price'))}</strong><small class="{change_class}">{_esc(change_text)}</small></div>
+        <div class="es-price"><span>HARGA SAAT INI</span><strong>{_fmt_rupiah(display_price)}</strong><small class="{change_class}">{_esc(change_text)}</small><em class="{price_note_class}">{_esc(price_note)}</em></div>
       </div>
       <div class="es-grid-main">
         <div class="es-panel"><h3>PLAN TRADING</h3>{_plan_rows(row)}</div>
@@ -878,7 +882,7 @@ def render_top3_dashboard_html(
     .es-score,.es-rec,.es-price{{text-align:center;display:flex;flex-direction:column;justify-content:center}} .es-score span,.es-rec span,.es-price span{{font-size:11px;color:#a9c8d8;font-weight:700}}
     .es-score strong{{font-size:45px;color:#74f7bd;line-height:1}} .es-score small{{color:#a9c8d8}}
     .es-rec strong{{font-size:23px;line-height:1.15;margin:6px 0}} .es-rec.green strong{{color:#53ed9c}} .es-rec.gold strong{{color:#ffd85a}} .es-rec.orange strong{{color:#ff9a4c}} .es-rec.blue strong{{color:#7fc7ff}}
-    .es-rec small{{font-size:10px;color:#abc3d2}} .es-price strong{{font-size:25px;margin:6px 0}} .es-price small.up{{color:#54ed9e}} .es-price small.down{{color:#ff725f}}
+    .es-rec small{{font-size:10px;color:#abc3d2}} .es-price strong{{font-size:25px;margin:6px 0}} .es-price small.up{{color:#54ed9e}} .es-price small.down{{color:#ff725f}} .es-price em{{font-size:8px;font-style:normal;line-height:1.3;margin-top:4px}} .es-price em.current{{color:#88b8ca}} .es-price em.stale{{color:#ffb05c;font-weight:700}}
     .es-grid-main{{display:grid;grid-template-columns:1fr 1.25fr 1fr;gap:12px;margin-top:12px}} .es-grid-bottom{{display:grid;grid-template-columns:.9fr 1.15fr 1fr;gap:12px;margin-top:12px}}
     .es-panel{{background:#071a2a;border:1px solid #174965;border-radius:12px;padding:12px;min-width:0}} .es-panel h3{{font-size:13px;color:#a9d8ef;text-align:center;margin:0 0 10px}}
     .es-plan-row{{display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-bottom:1px solid rgba(93,151,177,.15);font-size:12px}} .es-plan-row b{{color:#dcecf4}} .es-plan-row.stop b{{color:#ff6c5d}} .es-plan-row.target b{{color:#60ec9f}}
