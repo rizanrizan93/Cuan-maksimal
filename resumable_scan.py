@@ -996,7 +996,7 @@ def process_next_job_step(config: DatabaseConfig, job: Mapping[str, Any], *, now
     if stage in {"BENCHMARK", "OHLCV", "KSEI_SHORTLIST", "NEWS_SHORTLIST", "FUNDAMENTAL_SHORTLIST", "IDX_FUNDAMENTAL_SHORTLIST"}:
         if stage == "BENCHMARK": stage_tickers = ["^JKSE"]
         elif stage == "OHLCV": stage_tickers = tickers
-        elif stage == "IDX_FUNDAMENTAL_SHORTLIST": stage_tickers = shortlist[: max(1, int(settings.get("official_fundamental_limit") or 400))]
+        elif stage == "IDX_FUNDAMENTAL_SHORTLIST": stage_tickers = shortlist[: max(1, int(settings.get("official_fundamental_limit") or 150))]
         else: stage_tickers = shortlist
         updated, report = _process_cache_stage(config, job, stage=stage, tickers=stage_tickers, now=now)
         return updated, report, None
