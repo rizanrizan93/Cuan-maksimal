@@ -89,6 +89,7 @@ from persistent_cache import (
     persist_verify_cache_bundle,
 )
 from checkpoint_ui import checkpoint_execution_state
+from dashboard_price_overlay import apply_current_market_price_overlay
 
 from persistence import SCANNER_VERSION as PERSISTENCE_SCANNER_VERSION
 from future_fundamental import SCANNER_VERSION as FUTURE_FUNDAMENTAL_SCANNER_VERSION
@@ -750,6 +751,7 @@ else:
     st.warning("SCAN_COMPLETED_MEMORY_ONLY · hasil tersedia untuk sesi ini; data yang tidak ada di database akan diambil ulang dari provider.")
 radar = decision_contract.finalize_decision_snapshot(result["radar"], result.get("frames", {}))
 top3 = decision_contract.select_top3(radar, limit=3)
+top3_display, top3_price_meta = apply_current_market_price_overlay(top3)
 next_leaders = decision_contract.select_next_leaders(radar, limit=20)
 real_money_top3 = decision_contract.select_real_money_top3(radar, limit=3)
 deep_reviewed_count = int(radar["deep_review_state"].eq("DEEP_REVIEWED").sum())
@@ -841,8 +843,14 @@ with tab_top3:
     if top3.empty:
         st.warning("Belum ada kandidat yang layak masuk Top 3. Scanner tidak memaksakan saham reject atau data-integrity block.")
     else:
+        if int(top3_price_meta.get("technical_stale_rows", 0) or 0) > 0:
+            st.warning(
+                f"Harga card memakai factual close cache untuk sesi {top3_price_meta.get('expected_trade_date')}, "
+                f"tetapi {int(top3_price_meta.get('technical_stale_rows', 0) or 0)} kandidat masih membawa technical geometry lama. "
+                "Score/entry lama tidak dianggap current; jalankan scan ulang untuk memperbarui technical setup."
+            )
         top3_html = decision_contract.render_top3_dashboard_html(
-            top3,
+            top3_display,
             scan_id=str(result.get("scan_id", "")),
             as_of=result.get("as_of", ""),
             market_regime=str(result.get("market_context", {}).get("market_regime", "")),
@@ -858,7 +866,7 @@ with tab_top3:
         )
         dl2.download_button(
             "Download Top 3 data CSV",
-            top3.to_csv(index=False).encode("utf-8"),
+            top3_display.to_csv(index=False).encode("utf-8"),
             "idx_emir_execution_research_top3.csv",
             "text/csv",
         )
