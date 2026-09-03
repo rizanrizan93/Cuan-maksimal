@@ -1143,6 +1143,8 @@ def finalize_job(config: DatabaseConfig, job: Mapping[str, Any], *, now: Any) ->
     official_map = _fundamental_record_map(official_fundamental_frame)
     reconciled=[]
     for ticker in tickers:
+        if ticker not in proxy_map and ticker not in official_map:
+            continue
         proxy_payload = dict(proxy_map.get(ticker) or {})
         official_payload = dict(official_map.get(ticker) or {})
         # Defensive fallback: even an incomplete cache payload must retain its join key.
