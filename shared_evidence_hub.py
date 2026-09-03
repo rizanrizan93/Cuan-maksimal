@@ -212,10 +212,26 @@ class SupabaseEvidenceBackend:
         except ValueError as exc: raise RuntimeError("MALFORMED_RESPONSE") from exc
 
     def read_rows(self, table: str, filters: Mapping[str, Any], *, select: str = "*", limit: int = 10000) -> list[dict[str, Any]]:
-        params = {"select": select, "limit": max(1, min(int(limit), 50000))}
-        params.update({name: f"eq.{value}" for name, value in filters.items()})
-        payload = self._request("GET", table, params=params)
-        return [dict(row) for row in payload] if isinstance(payload, list) else []
+        requested = max(1, min(int(limit), 50000))
+        # Page explicitly because PostgREST may enforce a lower server-side
+        # max-row response cap than the caller's requested limit.
+        page_size = min(1000, requested)
+        rows: list[dict[str, Any]] = []
+        offset = 0
+        while len(rows) < requested:
+            params = {
+                "select": select,
+                "limit": min(page_size, requested - len(rows)),
+                "offset": offset,
+            }
+            params.update({name: f"eq.{value}" for name, value in filters.items()})
+            payload = self._request("GET", table, params=params)
+            page = [dict(row) for row in payload] if isinstance(payload, list) else []
+            rows.extend(page)
+            if len(page) < int(params["limit"]):
+                break
+            offset += len(page)
+        return rows[:requested]
 
     def upsert_rows(self, table: str, rows: Iterable[Mapping[str, Any]], *, conflict: Iterable[str]) -> list[dict[str, Any]]:
         records = [dict(row) for row in rows]
