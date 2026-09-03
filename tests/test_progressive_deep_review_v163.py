@@ -254,7 +254,7 @@ def test_explicit_full_deep_refresh_still_reviews_every_eligible_ticker():
 def test_dashboard_defaults_to_recall_150_not_all_eligible():
     source = (ROOT / "app.py").read_text()
     assert '"Optimal harian — Recall 150"' in source
-    assert '"Optimal harian — Recall 150": "DAILY_RECALL_80"' in source
+    assert '"Optimal harian — Recall 150": "DAILY_RECALL_150"' in source
     assert '"Semua ticker eligible (full deep refresh)": "ALL_ELIGIBLE"' in source
     assert '"Batas IDX official deep review"' in source
     assert "\n        150,\n        10," in source
