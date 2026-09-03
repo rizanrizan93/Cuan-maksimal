@@ -6,6 +6,7 @@ on:
     paths:
       - ".github/workflows/capital-action-issued-history-live-validation.yml"
       - "shared_capital_action_evidence.py"
+      - "shared_evidence_hub.py"
       - "tools/phase5_6_issued_history_live_validation.py"
       - "tests/test_phase5_6_issued_history_live_gate.py"
   workflow_dispatch:
