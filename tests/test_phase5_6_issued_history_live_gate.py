@@ -32,3 +32,19 @@ def test_issued_history_live_gate_is_bounded_and_global() -> None:
     assert "PRODUCER_FEED_NOT_BOUNDED_COMPLETE" in source
     assert "CONSUMER_NETWORK_BUDGET_VIOLATION" in source
     assert "CONSUMER_REQUEST_NOT_AVOIDED" in source
+
+
+def test_issued_history_consumer_auto_runs_on_relevant_main_merge() -> None:
+    workflow = (
+        Path(__file__).resolve().parents[1]
+        / ".github"
+        / "workflows"
+        / "capital-action-issued-history-live-validation.yml"
+    ).read_text(encoding="utf-8").lower()
+    assert "push:" in workflow
+    assert "branches: [main]" in workflow
+    assert '"shared_capital_action_evidence.py"' in workflow
+    assert 'ref: ${{ inputs.selected_ref || github.sha }}' in workflow
+    assert "tz=asia/jakarta date +%f" in workflow
+    assert "zapi_key" not in workflow
+    assert "schedule:" not in workflow
