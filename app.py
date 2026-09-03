@@ -419,9 +419,10 @@ with st.sidebar:
         index=0,
         disabled=scan_mode == "EMIR_FLOW_RADAR_ONLY",
         help=(
-            "Recall 150 adalah default harian: seluruh universe tetap diranking, tetapi provider mahal hanya "
-            "memperdalam sekitar 150 kandidat dengan buffer smart-money/structure/reversal + growth/turnaround cache. "
-            "Full deep refresh tetap tersedia bila memang ingin memperbarui semua ticker."
+            "Recall 150 adalah default harian: seluruh universe tetap diranking. Deep review mengambil 100 core "
+            "berdasarkan Emir discovery rank, lalu menambah hingga 20 growth/turnaround fundamental recall, "
+            "12 smart-money/liquidity, 10 structure/absorption, dan 8 reversal/seller-exhaustion. "
+            "Overlap antar-lane diisi kembali dari discovery rank sampai maksimal 150. Full deep refresh tetap tersedia."
         ),
     )
     deep_review_scope = {
