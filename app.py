@@ -70,8 +70,8 @@ from persistence import (
     persist_verify_scan_best_effort, scan_publication_allowed, test_connection, verify_scan,
 )
 from scan_jobs import (
-    ACTIVE_JOB_STATUSES, cancel_scan_job, create_scan_job, find_latest_job, get_scan_job,
-    job_status_frame, universe_hash,
+    ACTIVE_JOB_STATUSES, cancel_scan_job, create_scan_job, find_latest_job,
+    find_unique_active_job, get_scan_job, job_status_frame, universe_hash, update_scan_job,
 )
 from resumable_scan import load_persisted_scan_result, process_next_job_step
 import final_decision as decision_contract
@@ -464,15 +464,37 @@ with st.sidebar:
         "buka kembali lalu lanjutkan; ticker yang sudah selesai tidak diulang."
     )
 
-if universe_file is None:
-    st.info("Upload CSV dengan satu kolom `ticker`.")
-    st.stop()
+recovered_job = None
+if universe_file is None and db_config.ready:
+    try:
+        recovered_job = find_unique_active_job(db_config, scanner_version=JOB_VERSION)
+    except Exception:
+        # Recovery discovery must fail soft. The explicit database preflight below
+        # remains authoritative for connectivity/schema diagnostics.
+        recovered_job = None
 
-try:
-    universe = parse_universe_frame(universe_file)
-except Exception as exc:
-    st.error(f"Universe CSV gagal dibaca: {exc}")
-    st.stop()
+if universe_file is None:
+    recovered_universe = pd.DataFrame((recovered_job or {}).get("universe") or [])
+    if recovered_job and not recovered_universe.empty and "ticker" in recovered_universe.columns:
+        universe = recovered_universe
+        recovered_scan_id = str(recovered_job.get("scan_id") or "")
+        st.session_state["emir_active_scan_id"] = recovered_scan_id
+        if "emir_auto_continue" not in st.session_state:
+            st.session_state["emir_auto_continue"] = str(recovered_job.get("status") or "") in {"CREATED", "RUNNING"}
+        st.info(
+            f"Job aktif dipulihkan dari Supabase: `{recovered_scan_id}` · "
+            f"{recovered_job.get('current_stage')} · {float(recovered_job.get('progress_pct') or 0.0):.1f}%."
+        )
+    else:
+        st.info("Upload CSV dengan satu kolom `ticker`.")
+        st.stop()
+else:
+    try:
+        universe = parse_universe_frame(universe_file)
+    except Exception as exc:
+        st.error(f"Universe CSV gagal dibaca: {exc}")
+        st.stop()
+
 if universe.empty:
     st.error("Tidak ada ticker valid pada CSV.")
     st.stop()
@@ -504,7 +526,9 @@ if not job_tables_ready:
     st.stop()
 
 active_scan_id = str(st.session_state.get("emir_active_scan_id") or "")
-active_job = get_scan_job(db_config, active_scan_id) if active_scan_id else None
+active_job = recovered_job if recovered_job and str(recovered_job.get("scan_id") or "") == active_scan_id else None
+if active_job is None and active_scan_id:
+    active_job = get_scan_job(db_config, active_scan_id)
 
 def _job_engine_matches(job: dict | None) -> bool:
     if not job:
@@ -610,7 +634,25 @@ pause_clicked = control_cols[2].button("Jeda", disabled=not bool(active_job), wi
 
 if pause_clicked:
     st.session_state["emir_auto_continue"] = False
+    if active_job:
+        try:
+            active_job = update_scan_job(
+                db_config,
+                str(active_job.get("scan_id")),
+                {"status": "PAUSED", "last_error": ""},
+            )
+        except Exception as exc:
+            st.warning(f"Status jeda belum tersimpan ke database: {exc}")
 if auto_clicked:
+    if active_job:
+        try:
+            active_job = update_scan_job(
+                db_config,
+                str(active_job.get("scan_id")),
+                {"status": "RUNNING", "last_error": ""},
+            )
+        except Exception as exc:
+            st.warning(f"Status lanjut otomatis belum tersimpan ke database: {exc}")
     st.session_state["emir_auto_continue"] = True
 
 if active_job:
