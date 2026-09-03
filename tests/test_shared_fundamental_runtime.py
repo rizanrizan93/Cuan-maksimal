@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
-
 from shared_fundamental_runtime import canonicalize_metric_rows, normalize_operational_snapshot_rows, normalize_pluang_payloads, normalize_yahoo_payloads
 from shared_fundamental_runtime_patch import _official_payload, _proxy_payload
 
@@ -19,8 +17,8 @@ def test_operational_decimal_ratios_become_canonical_percentage_points() -> None
         "fundamental_fetched_at":"2026-09-03T00:00:00+00:00", "content_hash":"abc",
     }])
     values={row["metric_name"]:row["metric_value"] for row in rows}
-    assert values["revenue_growth_pct"] == 6.39
-    assert values["roe_pct"] == 19.21
+    assert round(values["revenue_growth_pct"], 4) == 6.39
+    assert round(values["roe_pct"], 4) == 19.21
     assert values["debt_equity"] == 0.5998
     assert values["fundamental_coverage_pct"] == 55.0
 
@@ -30,7 +28,7 @@ def test_canonical_exact_official_builds_yoy_and_ratios() -> None:
         return {"provider":"OPERATIONAL_FINANCIAL_FACT_BRIDGE","ticker":"ABMM","period_end":period,"metric_name":metric,"metric_value":value,"metric_unit":"NORMALIZED","source_families":"IDX_OFFICIAL_XBRL","official_verified":True,"source_record_hash":f"{period}-{metric}","lineage_state":"OPERATIONAL_FINANCIAL_FACT_EXACT_LINEAGE","observed_at":"2026-08-14T00:00:00+00:00","validation_state":"VALID","fetched_at":"2026-09-03T00:00:00+00:00"}
     item=canonicalize_metric_rows([r("2025-06-30","revenue",100),r("2025-06-30","net_income",10),r("2026-06-30","revenue",120),r("2026-06-30","net_income",15),r("2026-06-30","equity",100),r("2026-06-30","total_debt",40),r("2026-06-30","cash",20)])["ABMM"]
     assert item["official_period_end"] == "2026-06-30"
-    assert item["official_metrics"]["revenue_growth_yoy_pct"] == 20.0
+    assert round(item["official_metrics"]["revenue_growth_yoy_pct"], 6) == 20.0
     assert item["official_metrics"]["interest_bearing_debt_to_equity"] == 0.4
 
 
@@ -39,7 +37,7 @@ def test_pluang_and_yahoo_structured_facts_are_nonofficial() -> None:
     yahoo = normalize_yahoo_payloads("BBCA.JK", {"symbol":"BBCA.JK","provider":"yahoo","revenueGrowthPercent":2.5,"totalCash":50,"totalDebt":20}, {"income":{"items":[{"date":"2026-06-30","revenue":120,"netIncome":60},{"date":"2025-06-30","revenue":100,"netIncome":50}]},"balance":{"items":[{"date":"2026-06-30","totalAssets":500,"stockholdersEquity":200,"totalDebt":20,"cash":50}]},"cashflow":{"items":[{"date":"2026-06-30","operatingCashFlow":70}]}}, observed_at="2026-09-04T00:00:00+00:00")
     assert {row["metric_name"]:row["metric_value"] for row in pluang}["roe_pct"] == 20.44
     yvalues={row["metric_name"]:row["metric_value"] for row in yahoo}
-    assert yvalues["earnings_growth_pct"] == 20.0
+    assert round(yvalues["earnings_growth_pct"], 6) == 20.0
     assert yvalues["debt_equity"] == 0.1
     assert all(not row["official_verified"] for row in pluang+yahoo)
 
