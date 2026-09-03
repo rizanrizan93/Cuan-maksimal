@@ -40,8 +40,6 @@ def _install_integrity_patch(expected: str) -> None:
     _try_optional_patch("zapi_runtime_patch", "install")
     _try_optional_patch("broker_runtime_patch", "install")
 
-    # The core integrity patch is mandatory. A failure must stop startup rather
-    # than silently running a mixed release.
     patch = importlib.import_module("runtime_integrity_patch")
     patch.install(expected)
     _LAST_PATCH_STATUS["runtime_integrity_patch.install"] = {"state": "INSTALLED", "detail": ""}
@@ -52,6 +50,9 @@ def _install_integrity_patch(expected: str) -> None:
     _try_optional_patch("runtime_cache_checkpoint_hotfix", "install")
     _try_optional_patch("top3_lane_patch", "install")
     _try_optional_patch("execution_research_top3_runtime_patch", "install")
+    _try_optional_patch("shared_fundamental_rate_limit_patch", "install")
+    _try_optional_patch("shared_fundamental_runtime_patch", "install")
+    _try_optional_patch("shared_fundamental_scan_binding_patch", "install")
 
 
 def refresh_release_runtime(
