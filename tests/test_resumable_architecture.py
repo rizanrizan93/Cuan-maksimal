@@ -45,11 +45,16 @@ def test_pause_and_auto_continue_are_persisted_to_job_status():
 
 def test_daily_deep_provider_budget_is_shortlist_bounded_but_final_fundamentals_reuse_full_cache():
     source = (ROOT / "resumable_scan.py").read_text()
-    assert '"DAILY_RECALL_80": 80' in source
-    assert "DAILY_RECALL_PRIMARY_LIMIT = 55" in source
-    assert "DAILY_RECALL_MAX = 80" in source
+    assert '"DAILY_RECALL_150": 150' in source
+    assert "DAILY_RECALL_PRIMARY_LIMIT = 100" in source
+    assert "DAILY_RECALL_MAX = 150" in source
+    assert "DAILY_RECALL_FUNDAMENTAL_LIMIT = 20" in source
+    assert "DAILY_RECALL_SMART_MONEY_LIMIT = 12" in source
+    assert "DAILY_RECALL_STRUCTURE_LIMIT = 10" in source
+    assert "DAILY_RECALL_REVERSAL_LIMIT = 8" in source
+    assert '"shortlist_selection_reasons": shortlist_selection_reasons' in source
     assert 'stage_tickers = shortlist' in source
-    assert 'stage_tickers = shortlist[: max(1, int(settings.get("official_fundamental_limit") or 400))]' in source
+    assert 'stage_tickers = shortlist[: max(1, int(settings.get("official_fundamental_limit") or 150))]' in source
     assert "load_cached_fundamentals(config, tickers)" in source
     assert "load_cached_idx_official_fundamentals(config, tickers)" in source
     assert "for ticker in tickers:" in source
