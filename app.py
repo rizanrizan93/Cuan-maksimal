@@ -684,7 +684,7 @@ if active_job:
         current_stage = str(active_job.get("current_stage") or "")
         deep_stage_offset = int(active_job.get("current_offset") or 0) if current_stage in {"KSEI_SHORTLIST", "NEWS_SHORTLIST", "FUNDAMENTAL_SHORTLIST", "IDX_FUNDAMENTAL_SHORTLIST"} else 0
         progress_cols = st.columns(3)
-        active_stage_target = min(len(job_shortlist), int((active_job.get("settings") or {}).get("official_fundamental_limit") or 400)) if current_stage == "IDX_FUNDAMENTAL_SHORTLIST" else len(job_shortlist)
+        active_stage_target = min(len(job_shortlist), int((active_job.get("settings") or {}).get("official_fundamental_limit") or 150)) if current_stage == "IDX_FUNDAMENTAL_SHORTLIST" else len(job_shortlist)
         progress_cols[0].metric("Target deep review", len(job_shortlist))
         progress_cols[1].metric("Progress stage aktif", min(deep_stage_offset, active_stage_target))
         progress_cols[2].metric("Scope", str((active_job.get("settings") or {}).get("deep_review_scope") or "ALL_ELIGIBLE"))
