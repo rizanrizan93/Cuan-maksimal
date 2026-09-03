@@ -115,3 +115,22 @@ def test_dashboard_displays_separate_accumulation_and_breakout_rr():
     assert "ACCUM RR @ high" in html
     assert "BREAKOUT RR" in html
     assert "Risk : Reward" not in html
+
+
+def test_html_prefers_display_price_and_marks_stale_technical():
+    row = sample_row("PSAB.JK", "EMIR_NO_EDGE_YET", 68.7)
+    row["last_price"] = 615
+    row["display_last_price"] = 565
+    row["display_price_change_pct"] = 0.0
+    row["display_price_note"] = "Factual close 2026-09-02 · TECHNICAL STALE — RESCAN REQUIRED"
+    row["display_technical_freshness_state"] = "TECHNICAL_STALE_RESCAN_REQUIRED"
+    top = select_top3(enrich_dashboard_scores(pd.DataFrame([row])))
+    # Display fields are render-only and survive selection.
+    top["display_last_price"] = 565
+    top["display_price_change_pct"] = 0.0
+    top["display_price_note"] = "Factual close 2026-09-02 · TECHNICAL STALE — RESCAN REQUIRED"
+    top["display_technical_freshness_state"] = "TECHNICAL_STALE_RESCAN_REQUIRED"
+    html = render_top3_dashboard_html(top)
+    assert "Rp565" in html
+    assert "TECHNICAL STALE — RESCAN REQUIRED" in html
+    assert "HARGA SAAT INI" in html
