@@ -229,6 +229,39 @@ def get_scan_job(config: DatabaseConfig, scan_id: str) -> dict[str, Any] | None:
     return _job_from_row(rows[0]) if isinstance(rows, list) and rows else None
 
 
+def find_unique_active_job(
+    config: DatabaseConfig,
+    *,
+    scanner_version: str = JOB_VERSION,
+) -> dict[str, Any] | None:
+    """Recover a current-version active job when there is exactly one candidate.
+
+    This is intentionally universe-agnostic so a fresh Streamlit process can recover
+    before the file uploader exists. If multiple active universes exist, return None
+    rather than silently attaching the UI to the wrong job.
+    """
+    if not config.ready:
+        return None
+    status_filter = "in.(" + ",".join(ACTIVE_JOB_STATUSES) + ")"
+    response = _request(
+        config,
+        "GET",
+        "cak_scan_jobs",
+        params={
+            "select": "*",
+            "scanner_version": f"eq.{scanner_version}",
+            "status": status_filter,
+            "order": "updated_at.desc",
+            "limit": "2",
+        },
+        timeout=10,
+    )
+    rows = response.json()
+    if not isinstance(rows, list) or len(rows) != 1:
+        return None
+    return _job_from_row(rows[0])
+
+
 def find_latest_job(
     config: DatabaseConfig,
     *,
@@ -389,6 +422,6 @@ def job_status_frame(job: Mapping[str, Any] | None) -> pd.DataFrame:
 __all__ = [
     "JOB_VERSION", "ACTIVE_JOB_STATUSES", "TERMINAL_JOB_STATUSES", "STAGE_ORDER",
     "normalized_universe_records", "universe_hash", "stage_progress", "next_chunk",
-    "create_scan_job", "get_scan_job", "find_latest_job", "update_scan_job",
+    "create_scan_job", "get_scan_job", "find_latest_job", "find_unique_active_job", "update_scan_job",
     "record_job_chunk", "load_job_chunks", "cancel_scan_job", "job_status_frame",
 ]
