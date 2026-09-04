@@ -79,27 +79,73 @@ def test_shared_profile_is_point_in_time_and_maha_stale():
     assert not strict_active(maha, as_of="2026-09-05T00:00:00Z")
 
 
-def test_local_emir_sync_publishes_only_canonical_factual_shape(monkeypatch):
+def test_reconcile_preserves_pasticuan_provenance_and_factual_payload(monkeypatch):
+    local = canonicalize_emir_row(emir_tspc())
+    existing = dict(local)
+    existing["producer_clients"] = ["PASTICUAN"]
+    existing["producer_records"] = {"PASTICUAN": "OFFICIAL_FORWARD|TSPC|TCBI_JV_2026"}
+    existing["payload"] = {
+        "secondary_url": BPOM,
+        "regulator_support_confirmed": True,
+        "corroboration_publication_date": "2026-07-24",
+    }
+
+    def fake_read(tickers, *, client_id):
+        assert tickers == ["TSPC.JK"]
+        assert client_id == "EMIR"
+        return [existing], {"state": "SHARED_CANONICAL_FORWARD", "rows": 1}
+
+    monkeypatch.setattr(runtime_patch, "read_canonical_forward_rows", fake_read)
+    rows, audit = runtime_patch._reconcile_with_shared([local])
+    assert audit["state"] == "RECONCILED"
+    assert len(rows) == 1
+    row = rows[0]
+    assert set(row["producer_clients"]) == {"EMIR", "PASTICUAN"}
+    assert row["producer_records"]["PASTICUAN"] == "OFFICIAL_FORWARD|TSPC|TCBI_JV_2026"
+    assert row["producer_records"]["EMIR"] == "emir-tspc"
+    assert row["payload"]["corroboration_publication_date"] == "2026-07-24"
+
+
+def test_local_emir_sync_publishes_only_reconciled_canonical_factual_shape(monkeypatch):
     class Governed:
         @staticmethod
         def _read_strict_rows(config, table):
             assert table == "cak_forward_evidence"
             return [emir_tspc()], []
 
+    existing = canonicalize_pasticuan_row(pasticuan_tspc())
     captured = {}
+
+    def fake_read(tickers, *, client_id):
+        return [existing], {"state": "SHARED_CANONICAL_FORWARD", "rows": 1}
 
     def fake_upsert(rows, *, client_id):
         captured["rows"] = rows
         captured["client_id"] = client_id
         return rows, {"state": "UPSERTED", "rows": len(rows)}
 
+    monkeypatch.setattr(runtime_patch, "read_canonical_forward_rows", fake_read)
     monkeypatch.setattr(runtime_patch, "upsert_canonical_forward_rows", fake_upsert)
     audit = runtime_patch._sync_local_strict_rows(Governed, object())
     assert audit["state"] == "UPSERTED"
+    assert audit["reconcile_state"] == "RECONCILED"
     assert captured["client_id"] == "EMIR"
     row = captured["rows"][0]
     assert row["canonical_event_id"] == EXPECTED_TSPC_ID
+    assert set(row["producer_clients"]) == {"EMIR", "PASTICUAN"}
     assert not any(key in row for key in ("materiality_score", "financial_bridge_score", "recommendation", "authorization"))
+
+
+def test_emir_publish_fails_closed_when_shared_row_cannot_be_read(monkeypatch):
+    local = canonicalize_emir_row(emir_tspc())
+
+    def fake_read(tickers, *, client_id):
+        return [], {"state": "READ_FAIL_SOFT", "error": "temporary"}
+
+    monkeypatch.setattr(runtime_patch, "read_canonical_forward_rows", fake_read)
+    rows, audit = runtime_patch._reconcile_with_shared([local])
+    assert rows == []
+    assert audit["state"] == "RECONCILE_READ_UNAVAILABLE"
 
 
 def test_runtime_binding_installs_before_phase56_reuse_wrapper():
