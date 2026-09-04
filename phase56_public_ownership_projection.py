@@ -9,20 +9,23 @@ integrity clearance.
 """
 
 import os
-from typing import Any, Iterable, Mapping
+import time
+from typing import Any, Callable, Iterable, Mapping
 
 import requests
 
 from shared_fundamental_runtime import bare_ticker
 from phase56_public_fundamental_projection import PUBLIC_PROJECTION_KEY
 
-PATCH_VERSION = "1.0.0-phase5.6-public-ownership-context"
+PATCH_VERSION = "1.1.0-phase5.6-public-ownership-context-ttl"
 PUBLIC_OWNERSHIP_URL = os.getenv(
     "PHASE56_PUBLIC_OWNERSHIP_URL",
     "https://mbtsvflwszcgdtijdgas.supabase.co/rest/v1/phase56_public_ownership_snapshots",
 ).strip()
 PUBLIC_OWNERSHIP_KEY = os.getenv("PHASE56_PUBLIC_OWNERSHIP_KEY", PUBLIC_PROJECTION_KEY).strip()
 REQUEST_TIMEOUT_SECONDS = 10
+CACHE_TTL_SECONDS = 6 * 60 * 60
+CACHE_RETRY_SECONDS = 15 * 60
 CONTEXT_FIELDS = (
     "ownership_public_insiders_held_pct",
     "ownership_public_institutions_held_pct",
@@ -97,6 +100,56 @@ def fetch_public_ownership_context(
     return context, {"state": "PUBLIC_OWNERSHIP_LOADED", "rows": len(rows), "tickers": len(context)}
 
 
+class _OwnershipContextCache:
+    """Bounded cache that refreshes long-lived Streamlit workers safely.
+
+    A successful public-projection read is kept for six hours. If a refresh
+    fails, the last known-good context is retained and the endpoint is retried
+    after 15 minutes instead of being called on every scan.
+    """
+
+    def __init__(
+        self,
+        loader: Callable[[], tuple[dict[str, dict[str, Any]], dict[str, Any]]],
+        *,
+        ttl_seconds: float = CACHE_TTL_SECONDS,
+        retry_seconds: float = CACHE_RETRY_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.loader = loader
+        self.ttl_seconds = max(1.0, float(ttl_seconds))
+        self.retry_seconds = max(1.0, float(retry_seconds))
+        self.clock = clock
+        self.context: dict[str, dict[str, Any]] = {}
+        self.last_success_at: float | None = None
+        self.last_attempt_at: float | None = None
+        self.last_meta: dict[str, Any] = {"state": "PUBLIC_OWNERSHIP_NOT_LOADED", "rows": 0, "tickers": 0}
+
+    def _due(self, now: float) -> bool:
+        if self.last_attempt_at is None:
+            return True
+        if self.last_success_at is None:
+            return now - self.last_attempt_at >= self.retry_seconds
+        if self.last_attempt_at > self.last_success_at:
+            return now - self.last_attempt_at >= self.retry_seconds
+        return now - self.last_success_at >= self.ttl_seconds
+
+    def get(self) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+        now = float(self.clock())
+        if not self._due(now):
+            return self.context, dict(self.last_meta)
+        self.last_attempt_at = now
+        fresh, meta = self.loader()
+        self.last_meta = dict(meta or {})
+        if str(self.last_meta.get("state") or "") == "PUBLIC_OWNERSHIP_LOADED" and fresh:
+            self.context = {ticker: dict(payload) for ticker, payload in fresh.items()}
+            self.last_success_at = now
+        elif self.context:
+            self.last_meta["fallback_state"] = "LAST_KNOWN_GOOD_PUBLIC_OWNERSHIP_CONTEXT"
+            self.last_meta["tickers"] = len(self.context)
+        return self.context, dict(self.last_meta)
+
+
 def merge_public_context(
     base_map: Mapping[str, Mapping[str, Any]] | None,
     public_map: Mapping[str, Mapping[str, Any]] | None,
@@ -120,14 +173,12 @@ def install() -> None:
 
     original_ksei_maps = scan.ksei_profiles_to_maps
     original_build_profile = scan.build_emir_profile
-    cached_context: dict[str, dict[str, Any]] | None = None
+    context_cache = _OwnershipContextCache(fetch_public_ownership_context)
 
     def ksei_maps_with_public_context(ksei_profiles, ksei_actions, as_of=None):
-        nonlocal cached_context
         ownership_map, integrity_map = original_ksei_maps(ksei_profiles, ksei_actions, as_of=as_of)
-        if cached_context is None:
-            cached_context, _meta = fetch_public_ownership_context()
-        return merge_public_context(ownership_map, cached_context), integrity_map
+        public_context, _meta = context_cache.get()
+        return merge_public_context(ownership_map, public_context), integrity_map
 
     def build_profile_with_public_context(*args, **kwargs):
         result = original_build_profile(*args, **kwargs)
@@ -145,9 +196,12 @@ def install() -> None:
 
 
 __all__ = [
+    "CACHE_RETRY_SECONDS",
+    "CACHE_TTL_SECONDS",
     "CONTEXT_FIELDS",
     "PATCH_VERSION",
     "PUBLIC_OWNERSHIP_URL",
+    "_OwnershipContextCache",
     "fetch_public_ownership_context",
     "install",
     "merge_public_context",
