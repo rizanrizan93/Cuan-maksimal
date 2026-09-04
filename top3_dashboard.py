@@ -11,6 +11,7 @@ from release_contract import SCANNER_RELEASE_VERSION
 from top3_dashboard_legacy import *  # noqa: F401,F403
 
 SMART_MONEY_COST_BASIS_VERSION = "1.0.0"
+TOP3_UI_VERSION = "1.0.0-institutional-ui"
 SCANNER_VERSION = SCANNER_RELEASE_VERSION
 
 
@@ -256,6 +257,28 @@ def _cost_block(row: Mapping[str, Any]) -> str:
     )
 
 
+_INSTITUTIONAL_CSS = """
+/* Presentation-only institutional skin. Calculation authority remains in legacy. */
+.es-wrap{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif!important;color:#e7eef6!important;background:#071019!important;border:1px solid #203244!important;border-radius:14px!important;padding:16px!important;box-shadow:none!important}
+.es-title{text-align:left!important;margin:2px 0 0!important;font-size:clamp(23px,3vw,36px)!important;font-weight:720!important;letter-spacing:-.035em!important;color:#f3f7fb!important}.es-title b{color:#58c8b8!important;font-weight:720!important}
+.es-method{max-width:none!important;text-align:left!important;margin:10px 0 16px!important;padding:10px 12px!important;background:#0b1621!important;border:1px solid #1d3042!important;border-radius:9px!important;color:#8fa3b6!important;font-size:11px!important;line-height:1.5!important}.es-method strong{color:#c7d6e4!important}.es-method p{margin:5px 0 0!important;color:#7890a4!important;font-size:10px!important}
+.es-card{position:relative!important;margin:12px 0!important;padding:13px!important;background:#0a1520!important;border:1px solid #203244!important;border-radius:12px!important;box-shadow:0 8px 24px rgba(0,0,0,.16)!important;overflow:hidden!important}.es-card:before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:#51687b}.es-card.rank1:before{background:#18b89f}.es-card.rank2:before{background:#b99a4b}.es-card.rank3:before{background:#5c87ad}.es-card.rank1,.es-card.rank2,.es-card.rank3{border-color:#203244!important}
+.es-card-head{display:grid!important;grid-template-columns:54px minmax(190px,2fr) minmax(115px,.72fr) minmax(155px,1fr) minmax(140px,.9fr)!important;gap:9px!important;align-items:stretch!important}
+.es-rank{border-radius:9px!important;background:#11231f!important;border:1px solid #245347!important;color:#d9f5ef!important}.rank2 .es-rank{background:#211e13!important;border-color:#584c25!important;color:#f1e3b0!important}.rank3 .es-rank{background:#101d28!important;border-color:#2c4d68!important;color:#d5e7f5!important}.es-rank small{font-size:9px!important;letter-spacing:.08em!important;opacity:.7}.es-rank strong{font-size:30px!important;font-variant-numeric:tabular-nums!important}
+.es-identity,.es-score,.es-rec,.es-price{padding:10px 11px!important;border-radius:9px!important;background:#0d1925!important;border:1px solid #203244!important}.es-identity h2{font-size:29px!important;line-height:1!important;letter-spacing:-.025em!important;color:#f5f8fb!important}.es-identity p{margin:5px 0 2px!important;color:#9eb0c0!important;font-size:10px!important}.es-identity em{color:#58c8b8!important;font-size:10px!important;letter-spacing:.04em!important}.es-chip{margin:6px 4px 0 0!important;padding:2px 6px!important;background:#101f2d!important;border:1px solid #294055!important;border-radius:5px!important;color:#9fb3c4!important;font-size:8px!important;font-weight:650!important}
+.es-score span,.es-rec span,.es-price span{font-size:8px!important;letter-spacing:.08em!important;color:#778da1!important}.es-score strong{font-size:36px!important;color:#69d7c6!important;font-variant-numeric:tabular-nums!important}.es-score small,.es-rec small{color:#8298aa!important;font-size:8px!important}.es-rec strong{font-size:17px!important;margin:5px 0!important}.es-rec.green strong{color:#63d6a8!important}.es-rec.gold strong{color:#d7bc68!important}.es-rec.orange strong{color:#d99b63!important}.es-rec.blue strong{color:#75a9d4!important}.es-price strong{font-size:20px!important;margin:5px 0!important;font-variant-numeric:tabular-nums!important}.es-price small.up{color:#63d6a8!important}.es-price small.down{color:#d87570!important}.es-price em{font-size:7px!important;margin-top:3px!important}.es-price em.current{color:#71899b!important}.es-price em.stale{color:#d99b63!important}
+.es-grid-main{grid-template-columns:1fr 1.2fr .95fr!important;gap:9px!important;margin-top:9px!important}.es-grid-bottom{grid-template-columns:.9fr 1.15fr 1fr!important;gap:9px!important;margin-top:9px!important}.es-panel{background:#0c1823!important;border:1px solid #203244!important;border-radius:9px!important;padding:10px!important}.es-panel h3{text-align:left!important;color:#8fa6b8!important;font-size:9px!important;letter-spacing:.09em!important;margin:0 0 9px!important}
+.es-plan-row{padding:5px 0!important;border-bottom:1px solid rgba(83,111,134,.18)!important;font-size:9px!important;color:#91a5b5!important}.es-plan-row b{color:#d8e2e9!important;font-variant-numeric:tabular-nums!important}.es-plan-row.stop b{color:#dc7b75!important}.es-plan-row.target b{color:#69d3a7!important}
+.es-factor{grid-template-columns:100px 1fr 26px!important;gap:7px!important;font-size:9px!important;margin:6px 0!important;color:#90a5b6!important}.es-factor b{font-variant-numeric:tabular-nums!important;color:#cdd8e0!important}.es-bar{height:5px!important;background:#152637!important}.es-bar i{background:#28a995!important}
+.es-gauge{width:98px!important;height:98px!important;background:conic-gradient(#2bb49e var(--pct),#5b2930 0)!important}.es-gauge:before{width:72px!important;height:72px!important;background:#0c1823!important}.es-gauge strong{font-size:20px!important}.es-gauge small{font-size:7px!important;color:#8399aa!important}.es-flow-stats{font-size:8px!important}.es-flow-stats span{padding:5px!important;background:#101e2b!important;border:1px solid #1c3042!important}.es-flow p{font-size:7px!important;color:#6f879a!important}
+.es-report-row{font-size:9px!important;border-bottom:1px solid rgba(83,111,134,.16)!important}.es-report-row b{color:#cfb660!important}.es-reason-summary{margin:0 0 8px!important;padding:6px 8px!important;background:#101e2b!important;color:#819bad!important;font-size:8px!important}.es-reasons{font-size:9px!important}.es-reasons li{padding:4px 0!important}.es-reasons li.positive span{color:#63d6a8!important}.es-reasons li.developing span{color:#d7bc68!important}.es-reasons li.warning span{color:#d99b63!important}.es-highlight p{font-size:9px!important;line-height:1.55!important;color:#c7d3dc!important}.es-highlight small{color:#71889a!important;font-size:8px!important}.es-confidence{padding:6px!important;border-radius:6px!important;background:#101e2b!important;font-size:8px!important;letter-spacing:.05em!important}
+.es-cost-basis{margin-top:8px!important;padding:8px 9px!important;border:1px solid #234154!important;border-radius:7px!important;background:#0f1d29!important;text-align:left!important}.es-cost-basis span{display:block;color:#7894a6!important;font-size:7px!important;font-weight:750;letter-spacing:.08em}.es-cost-basis strong{display:block;color:#69d7c6!important;font-size:12px!important;margin:3px 0}.es-cost-basis small,.es-cost-basis em{display:block;color:#8095a6!important;font-size:7px!important;font-style:normal!important;line-height:1.4}
+.es-footer{margin-top:12px!important;padding:9px 0 0!important;border-top:1px solid #203244!important;color:#637b8e!important;font-size:8px!important}
+@media(max-width:980px){.es-card-head{grid-template-columns:50px 1.5fr 100px!important}.es-rec,.es-price{grid-column:span 1}.es-grid-main,.es-grid-bottom{grid-template-columns:1fr!important}.es-identity h2{font-size:25px!important}}
+@media(max-width:640px){.es-wrap{padding:8px!important;border-radius:10px!important}.es-title{font-size:22px!important}.es-method{font-size:9px!important;margin-bottom:10px!important}.es-card{padding:9px!important}.es-card-head{grid-template-columns:42px 1fr!important}.es-score,.es-rec,.es-price{grid-column:span 1!important}.es-score strong{font-size:31px!important}.es-rank strong{font-size:26px!important}.es-factor{grid-template-columns:90px 1fr 24px!important}}
+"""
+
+
 def render_top3_dashboard_html(
     top3: pd.DataFrame,
     *,
@@ -264,13 +287,7 @@ def render_top3_dashboard_html(
     market_regime: str = "",
 ) -> str:
     html = _legacy.render_top3_dashboard_html(top3, scan_id=scan_id, as_of=as_of, market_regime=market_regime)
-    css = """
-    .es-cost-basis{margin-top:8px;padding:8px;border:1px solid #2b6f84;border-radius:8px;background:#092433;text-align:left}
-    .es-cost-basis span{display:block;color:#8eb8c8;font-size:8px;font-weight:800;letter-spacing:.5px}
-    .es-cost-basis strong{display:block;color:#77f0ba;font-size:13px;margin:3px 0}
-    .es-cost-basis small,.es-cost-basis em{display:block;color:#a6c4d1;font-size:8px;font-style:normal;line-height:1.35}
-    """
-    html = html.replace("</style>", css + "</style>", 1)
+    html = html.replace("</style>", _INSTITUTIONAL_CSS + "</style>", 1)
     for _, row in top3.iterrows():
         evidence_type = str(row.get("broker_inventory_evidence_type") or "OHLCV_PROXY")
         flow_note = "DIRECT BROKER EVIDENCE" if "DIRECT" in evidence_type else "OHLCV PROXY — BUKAN IDENTITAS BROKER"
@@ -283,6 +300,7 @@ def render_top3_dashboard_html(
 __all__ = list(getattr(_legacy, "__all__", []))
 for _name in (
     "SMART_MONEY_COST_BASIS_VERSION",
+    "TOP3_UI_VERSION",
     "SCANNER_VERSION",
     "enrich_dashboard_scores",
     "render_top3_dashboard_html",
