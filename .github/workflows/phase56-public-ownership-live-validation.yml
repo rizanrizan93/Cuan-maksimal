@@ -1,0 +1,50 @@
+name: Phase 5.6 public ownership live validation - Emir
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "phase56_public_ownership_projection.py"
+      - "tests/test_phase56_public_ownership_projection.py"
+      - "runtime_release.py"
+      - ".github/workflows/phase56-public-ownership-live-validation.yml"
+  push:
+    branches: [main]
+    paths:
+      - "phase56_public_ownership_projection.py"
+      - "runtime_release.py"
+      - ".github/workflows/phase56-public-ownership-live-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install bounded dependency
+        run: pip install requests==2.34.2
+      - name: Read public ownership context
+        run: |
+          python - <<'PY'
+          from phase56_public_ownership_projection import fetch_public_ownership_context
+          context, meta = fetch_public_ownership_context(["BBCA", "AALI", "ANTM", "MARK"])
+          print({"meta": meta, "tickers": sorted(context), "coverage": {k: v.get("ownership_public_context_coverage_pct") for k, v in context.items()}})
+          if meta.get("state") != "PUBLIC_OWNERSHIP_LOADED" or len(context) < 4:
+              raise SystemExit("public ownership context live proof failed")
+          for ticker in ("BBCA", "AALI", "ANTM", "MARK"):
+              row = context[ticker]
+              if float(row.get("ownership_public_context_coverage_pct") or 0) < 75:
+                  raise SystemExit(f"{ticker} public ownership context incomplete")
+              forbidden = {"ownership_score", "ownership_coverage_pct", "reported_free_float_pct", "effective_free_float_pct"}
+              if forbidden.intersection(row):
+                  raise SystemExit(f"{ticker} public context crossed ownership/KSEI boundary")
+          PY
