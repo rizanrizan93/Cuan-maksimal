@@ -52,6 +52,7 @@ def _install_integrity_patch(expected: str) -> None:
     _try_optional_patch("execution_research_top3_runtime_patch", "install")
     _try_optional_patch("shared_fundamental_rate_limit_patch", "install")
     _try_optional_patch("shared_fundamental_runtime_patch", "install")
+    _try_optional_patch("ksei_monthly_holding_composition_patch", "install")
     _try_optional_patch("phase56_public_fundamental_projection", "install")
     _try_optional_patch("phase56_public_ownership_projection", "install")
     _try_optional_patch("phase56_public_ownership_binding_fix", "install")
