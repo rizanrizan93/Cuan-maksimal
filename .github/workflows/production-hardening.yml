@@ -27,7 +27,7 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
       - name: Compile critical modules
-        run: python -m py_compile app.py release_contract.py runtime_release.py runtime_integrity_patch.py live_forward_evidence.py live_forward_runtime_patch.py evidence_governance.py free_tier_storage.py future_fundamental.py persistence.py persistent_direct_evidence.py research_memory.py resumable_scan.py scan_jobs.py data_providers.py autonomous_enrichment.py narrative_flow_engine.py shared_fundamental_runtime.py shared_fundamental_runtime_patch.py shared_fundamental_scan_binding_patch.py shared_fundamental_rate_limit_patch.py phase56_public_fundamental_projection.py
+        run: python -m py_compile app.py release_contract.py runtime_release.py runtime_integrity_patch.py live_forward_evidence.py live_forward_runtime_patch.py evidence_governance.py free_tier_storage.py future_fundamental.py persistence.py persistent_direct_evidence.py research_memory.py resumable_scan.py scan_jobs.py data_providers.py autonomous_enrichment.py narrative_flow_engine.py shared_fundamental_runtime.py shared_fundamental_runtime_patch.py shared_fundamental_scan_binding_patch.py shared_fundamental_rate_limit_patch.py phase56_public_fundamental_projection.py phase56_public_ownership_projection.py
       - name: Evidence governance regression
         run: pytest -q --disable-socket tests/test_evidence_governance.py
       - name: App startup regression
