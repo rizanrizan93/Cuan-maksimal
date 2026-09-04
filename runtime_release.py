@@ -55,6 +55,10 @@ def _install_integrity_patch(expected: str) -> None:
     _try_optional_patch("phase56_public_fundamental_projection", "install")
     _try_optional_patch("phase56_public_ownership_projection", "install")
     _try_optional_patch("shared_fundamental_scan_binding_patch", "install")
+    # Install last because several compatibility patches can wrap dashboard
+    # rendering.  The outermost presentation wrapper must normalize the final
+    # HTML returned to st.markdown, not an intermediate renderer.
+    _try_optional_patch("top3_html_render_patch", "install")
 
 
 def refresh_release_runtime(
