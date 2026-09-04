@@ -1,0 +1,42 @@
+name: Phase 5.6 public projection live validation - Emir
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "phase56_public_fundamental_projection.py"
+      - ".github/workflows/phase56-public-projection-live-validation.yml"
+  push:
+    branches: [main]
+    paths:
+      - "phase56_public_fundamental_projection.py"
+      - ".github/workflows/phase56-public-projection-live-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install bounded dependency
+        run: pip install requests==2.34.2
+      - name: Read public factual projection
+        run: |
+          python - <<'PY'
+          from phase56_public_fundamental_projection import fetch_public_bundle
+          bundle, meta = fetch_public_bundle(["BBCA", "AALI", "ANTM"])
+          print({"meta": meta, "tickers": sorted(bundle), "official_periods": {k: v.get("official_period_end") for k, v in bundle.items()}})
+          if meta.get("state") != "PUBLIC_PROJECTION_LOADED" or len(bundle) < 3:
+              raise SystemExit("public projection live proof failed")
+          if not bundle["BBCA"].get("proxy_metrics"):
+              raise SystemExit("BBCA public projection metrics missing")
+          PY

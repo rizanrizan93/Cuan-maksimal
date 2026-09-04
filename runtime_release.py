@@ -52,11 +52,13 @@ def _install_integrity_patch(expected: str) -> None:
     _try_optional_patch("execution_research_top3_runtime_patch", "install")
     _try_optional_patch("shared_fundamental_rate_limit_patch", "install")
     _try_optional_patch("shared_fundamental_runtime_patch", "install")
+    _try_optional_patch("phase56_public_fundamental_projection", "install")
     _try_optional_patch("shared_fundamental_scan_binding_patch", "install")
 
 
 def refresh_release_runtime(
-    *, reload_order: Sequence[str], version_markers: Mapping[str, str],
+    *,
+    reload_order: Sequence[str], version_markers: Mapping[str, str],
 ) -> tuple[str, tuple[str, ...]]:
     importlib.invalidate_caches()
     contract = importlib.import_module("release_contract")
