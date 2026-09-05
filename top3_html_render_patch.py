@@ -3,11 +3,13 @@ from __future__ import annotations
 """Presentation-only fix for Emir Execution Research Top 3 HTML rendering.
 
 Streamlit parses ``st.markdown`` as Markdown before allowing embedded HTML.
-The legacy Top 3 renderer intentionally returns indented triple-quoted HTML;
-lines with four leading spaces are therefore interpreted as Markdown code
-blocks and the tags become visible text.  This patch removes only that common
-indentation.  It does not touch candidate selection, scoring, ranking, gates,
-or persisted scan data.
+The legacy Top 3 renderer and its runtime wrappers can produce mixed indentation:
+a stylesheet may begin at column zero while later HTML lines retain four or more
+leading spaces. In that shape ``textwrap.dedent`` alone has no common indentation
+to remove, and Markdown renders the indented tags as a visible code block.
+
+This patch normalizes every non-empty output line to the left margin. It does not
+touch candidate selection, scoring, ranking, gates, or persisted scan data.
 """
 
 from functools import wraps
@@ -15,19 +17,22 @@ from textwrap import dedent
 from typing import Any
 
 
-PATCH_VERSION = "1.0.0-streamlit-markdown-html-dedent"
+PATCH_VERSION = "1.0.1-streamlit-markdown-html-left-margin"
 
 
 def normalize_top3_html(value: Any) -> str:
-    """Return HTML at the left margin so Streamlit does not treat it as code."""
-    return dedent(str(value or "")).strip()
+    """Return HTML with no Markdown code-block indentation on any line."""
+    text = dedent(str(value or "")).strip()
+    if not text:
+        return ""
+    return "\n".join(line.lstrip() for line in text.splitlines()).strip()
 
 
 def install() -> dict[str, str]:
     import top3_dashboard
 
     current = top3_dashboard.render_top3_dashboard_html
-    if bool(getattr(current, "_emir_top3_html_render_patch", False)):
+    if str(getattr(current, "_emir_top3_html_render_patch_version", "")) == PATCH_VERSION:
         return {"patch_version": PATCH_VERSION, "state": "ALREADY_INSTALLED"}
 
     @wraps(current)
