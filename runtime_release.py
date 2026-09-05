@@ -56,6 +56,10 @@ def _install_integrity_patch(expected: str) -> None:
     # A verified per-security profile can still have empty composition fields.
     # Complete only those fields from the official monthly KSEI archive.
     _try_optional_patch("ksei_monthly_field_completion_patch", "install")
+    # Canonical Shared Hub KSEI is the durable source of the same monthly facts.
+    # Install after web fallbacks so it is the final field-completion layer and
+    # scan health no longer depends on another live KSEI archive download.
+    _try_optional_patch("shared_ksei_runtime_context_patch", "install")
     _try_optional_patch("phase56_public_fundamental_projection", "install")
     _try_optional_patch("phase56_public_ownership_projection", "install")
     _try_optional_patch("phase56_public_ownership_binding_fix", "install")
