@@ -53,22 +53,17 @@ def _install_integrity_patch(expected: str) -> None:
     _try_optional_patch("shared_fundamental_rate_limit_patch", "install")
     _try_optional_patch("shared_fundamental_runtime_patch", "install")
     _try_optional_patch("ksei_monthly_holding_composition_patch", "install")
-    # A verified per-security profile can still have empty composition fields.
-    # Complete only those fields from the official monthly KSEI archive.
     _try_optional_patch("ksei_monthly_field_completion_patch", "install")
-    # Canonical Shared Hub KSEI is the durable source of the same monthly facts.
-    # Install after web fallbacks so it is the final field-completion layer and
-    # scan health no longer depends on another live KSEI archive download.
     _try_optional_patch("shared_ksei_runtime_context_patch", "install")
+    # The actual scan consumes fetch_ksei_cache_first.  Complete its output too,
+    # otherwise a fresh but partial cache bypasses lower network-fetch wrappers.
+    _try_optional_patch("emir_ksei_cache_first_binding_patch", "install")
     _try_optional_patch("phase56_public_fundamental_projection", "install")
     _try_optional_patch("phase56_public_ownership_projection", "install")
     _try_optional_patch("phase56_public_ownership_binding_fix", "install")
     _try_optional_patch("shared_fundamental_scan_binding_patch", "install")
     _try_optional_patch("emir_shared_forward_runtime_patch", "install")
     _try_optional_patch("phase56_coverage_runtime_integrity_patch", "install")
-    # Install last because several compatibility patches can wrap dashboard
-    # rendering. The outermost presentation wrapper must normalize the final
-    # HTML returned to st.markdown, not an intermediate renderer.
     _try_optional_patch("top3_html_render_patch", "install")
 
 
