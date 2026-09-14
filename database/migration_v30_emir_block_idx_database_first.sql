@@ -398,7 +398,7 @@ begin
         observations>=80 and adtv20>=1000000000 and close>ma20 and ma20>ma60
         and foreign_positive20>=11 and foreign_net20>0
         and not active_suspension and not recent_dilution
-        and coalesce(spread,99)<=2 and coverage_pct>=50
+        and coalesce(spread,99)<=2 and coalesce(coverage_pct,0)>=50
         and sl>0 and structural_tp1>close
       ) base_eligible
     from scored0 s
