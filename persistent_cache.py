@@ -1059,7 +1059,8 @@ def fetch_ohlcv_cache_first(
     )
     if not audit.empty:
         audit = audit.copy()
-        audit["detail"] = audit.get("detail", "").astype(str) + " Interactive provider calls disabled by CAK_SCAN_DATABASE_ONLY."
+        base_detail = audit["detail"].astype(str) if "detail" in audit.columns else pd.Series("", index=audit.index, dtype=str)
+        audit["detail"] = base_detail + " Interactive provider calls disabled by CAK_SCAN_DATABASE_ONLY."
     return frames, audit, []
 
 
@@ -1137,3 +1138,71 @@ def fetch_idx_official_fundamental_cache_first(
         )
     snapshots, audit = load_cached_idx_official_fundamentals(config, tickers)
     return snapshots, audit, []
+
+
+_legacy_load_cached_ohlcv_frames = load_cached_ohlcv_frames
+
+
+def load_cached_ohlcv_frames(
+    config: DatabaseConfig,
+    tickers: Iterable[str],
+    *,
+    period: str = "5y",
+    now: Any = None,
+    completed_only: bool = True,
+) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
+    if not _strict_database_only():
+        return _legacy_load_cached_ohlcv_frames(
+            config, tickers, period=period, now=now, completed_only=completed_only
+        )
+    from emir_database_only import load_benchmark_frame, load_market_panel
+
+    symbols = list(dict.fromkeys(normalize_ticker(t) for t in tickers if normalize_ticker(t)))
+    frames: dict[str, pd.DataFrame] = {}
+    audits: list[dict[str, Any]] = []
+    equity_symbols = [symbol for symbol in symbols if not symbol.startswith("^")]
+    try:
+        panel = load_market_panel(
+            config,
+            [symbol.replace(".JK", "") for symbol in equity_symbols],
+            sessions=130,
+        )
+    except Exception as exc:
+        panel = pd.DataFrame()
+        panel_error = f"{type(exc).__name__}: {exc}"
+    else:
+        panel_error = ""
+
+    for symbol in equity_symbols:
+        plain = symbol.replace(".JK", "")
+        local = panel[panel.get("ticker", pd.Series(dtype=str)).astype(str).eq(plain)].copy() if not panel.empty else pd.DataFrame()
+        if local.empty:
+            audits.append(_audit_row(symbol, "EMIR_BLOCK_IDX_DATABASE", "CACHE_MISS_NO_PROVIDER_CALL", pd.DataFrame(), panel_error or "No official market rows."))
+            continue
+        local = local.rename(columns={
+            "trade_date": "Date", "open": "Open", "high": "High",
+            "low": "Low", "close": "Close", "volume": "Volume",
+        })
+        frame = _sanitize_ohlcv(local.set_index("Date"))
+        if len(frame) < 80:
+            audits.append(_audit_row(symbol, "EMIR_BLOCK_IDX_DATABASE", "CACHE_MISS_NO_PROVIDER_CALL", frame, f"Only {len(frame)} official sessions; 80 required."))
+            continue
+        frames[symbol] = completed_session_frame(frame, now=now, completed_only=completed_only)
+        audits.append(_audit_row(symbol, "EMIR_BLOCK_IDX_DATABASE", "CACHE_HIT", frames[symbol], "Official normalized Block IDX panel; no provider call."))
+
+    for symbol in [item for item in symbols if item.startswith("^")]:
+        benchmark = load_benchmark_frame(config, sessions=130)
+        if benchmark.empty:
+            audits.append(_audit_row(symbol, "EMIR_BLOCK_IDX_DATABASE", "CACHE_MISS_NO_PROVIDER_CALL", pd.DataFrame(), "Official COMPOSITE index unavailable."))
+            continue
+        benchmark = benchmark.rename(columns={
+            "trade_date": "Date", "open": "Open", "high": "High",
+            "low": "Low", "close": "Close", "volume": "Volume",
+        })
+        frame = _sanitize_ohlcv(benchmark.set_index("Date"))
+        if len(frame) >= 20:
+            frames[symbol] = completed_session_frame(frame, now=now, completed_only=completed_only)
+            audits.append(_audit_row(symbol, "EMIR_BLOCK_IDX_DATABASE", "CACHE_HIT", frames[symbol], "Official COMPOSITE index; no provider call."))
+        else:
+            audits.append(_audit_row(symbol, "EMIR_BLOCK_IDX_DATABASE", "CACHE_MISS_NO_PROVIDER_CALL", frame, "Insufficient official index history."))
+    return frames, pd.DataFrame(audits)
