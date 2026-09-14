@@ -82,7 +82,7 @@ jobs:
         run: |
           {
             echo "### EMIR Block IDX EOD"
-            echo "- Producer: official block.idx.id only"
+            echo "- Primary APIs: official block.idx.id; XBRL bytes: official IDX static hosts"
             echo "- Scanner mode: database only"
             echo "- Scheduled: 17:30 WIB plus idempotent 18:30 WIB retry"
             echo "- Historical default: six calendar months"
