@@ -216,6 +216,7 @@ create table if not exists public.cak_idx_rank_daily (
   overall_rank integer,
   execution_rank integer,
   emir_score numeric not null,
+  execution_score numeric not null,
   fundamental_score numeric not null,
   smart_money_score numeric not null,
   momentum_score numeric not null,
@@ -232,6 +233,10 @@ create table if not exists public.cak_idx_rank_daily (
   adtv_20d numeric,
   frequency_20d numeric,
   spread_pct numeric,
+  entry_price numeric,
+  stop_loss numeric,
+  structural_tp1 numeric,
+  rr_tp1 numeric,
   official_fundamental_coverage_pct numeric,
   active_suspension boolean not null default false,
   recent_uma boolean not null default false,
@@ -406,18 +411,18 @@ begin
     from scored s
   )
   insert into public.cak_idx_rank_daily(
-    rank_date,ticker,overall_rank,execution_rank,emir_score,fundamental_score,smart_money_score,
+    rank_date,ticker,overall_rank,execution_rank,emir_score,execution_score,fundamental_score,smart_money_score,
     momentum_score,liquidity_score,regime_score,risk_score,observations,close,
     return_5d_pct,return_20d_pct,return_60d_pct,foreign_net_20d,foreign_positive_days_20d,
-    adtv_20d,frequency_20d,spread_pct,official_fundamental_coverage_pct,
+    adtv_20d,frequency_20d,spread_pct,entry_price,stop_loss,structural_tp1,rr_tp1,official_fundamental_coverage_pct,
     active_suspension,recent_uma,recent_dilution,execution_eligible,blocker
   )
   select v_eod,ticker,overall_rank,
     case when base_eligible and rr1>=1.8 then execution_rank end,
-    round(emir_score,4),round(fundamental_score,4),round(smart_score,4),round(momentum_score,4),
+    round(emir_score,4),round(execution_score,4),round(fundamental_score,4),round(smart_score,4),round(momentum_score,4),
     round(liquidity_score,4),round(regime_score,4),round(risk_score,4),observations,close,
     round(ret5,4),round(ret20,4),round(ret60,4),foreign_net20,foreign_positive20,
-    adtv20,freq20,spread,coverage_pct,active_suspension,recent_uma,recent_dilution,
+    adtv20,freq20,spread,close,sl,structural_tp1,rr1,coverage_pct,active_suspension,recent_uma,recent_dilution,
     base_eligible and rr1>=1.8,
     case
       when observations<80 then 'INSUFFICIENT_6M_HISTORY'
@@ -437,17 +442,13 @@ begin
     rank_date,execution_rank,ticker,execution_score,emir_score,entry_price,stop_loss,tp1,tp2,
     rr_tp1,risk_per_share,geometry_state
   )
-  select v_eod,row_number() over(order by s.execution_score desc,r.emir_score desc,r.ticker)::int,
-    r.ticker,round(s.execution_score,4),r.emir_score,r.close,s.sl,s.structural_tp1,
-    r.close+3*(r.close-s.sl),round(s.rr1,4),r.close-s.sl,'OBSERVED_SUPPORT_RESISTANCE_ATR'
+  select v_eod,row_number() over(order by r.execution_score desc,r.emir_score desc,r.ticker)::int,
+    r.ticker,r.execution_score,r.emir_score,r.entry_price,r.stop_loss,r.structural_tp1,
+    r.entry_price+3*(r.entry_price-r.stop_loss),r.rr_tp1,
+    r.entry_price-r.stop_loss,'OBSERVED_SUPPORT_RESISTANCE_ATR'
   from public.cak_idx_rank_daily r
-  join (
-    select ticker,execution_score,sl,structural_tp1,rr1
-    from scored
-    where base_eligible and rr1>=1.8
-  ) s using(ticker)
-  where r.rank_date=v_eod
-  order by s.execution_score desc,r.emir_score desc,r.ticker
+  where r.rank_date=v_eod and r.execution_eligible
+  order by r.execution_score desc,r.emir_score desc,r.ticker
   limit 3;
 
   select count(*) into v_rows from public.cak_idx_rank_daily where rank_date=v_eod;
