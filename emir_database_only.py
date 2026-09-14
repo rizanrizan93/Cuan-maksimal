@@ -109,8 +109,8 @@ def load_market_panel(
     if not names or not database_only_enabled():
         return pd.DataFrame()
     rows: list[dict[str, Any]] = []
-    for start in range(0, len(names), 50):
-        chunk = names[start:start + 50]
+    for start in range(0, len(names), 5):
+        chunk = names[start:start + 5]
         encoded = ",".join(f'"{name.replace(chr(34), "")}"' for name in chunk)
         rows.extend(_get(
             config,
@@ -129,7 +129,31 @@ def load_market_panel(
     return frame.dropna(subset=["ticker", "trade_date"]).sort_values(["ticker", "trade_date"]).reset_index(drop=True)
 
 
+def load_benchmark_frame(config: DatabaseConfig, *, sessions: int = 130) -> pd.DataFrame:
+    """Load COMPOSITE as the ^JKSE benchmark without a provider fallback."""
+    rows = _get(
+        config,
+        "cak_idx_index_daily",
+        {
+            "select": "trade_date,previous,highest,lowest,close,volume",
+            "index_code": "eq.COMPOSITE",
+            "source_verified": "eq.true",
+            "order": "trade_date.desc",
+            "limit": str(min(max(int(sessions), 20), 160)),
+        },
+    )
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return frame
+    frame["trade_date"] = pd.to_datetime(frame["trade_date"], errors="coerce")
+    frame = frame.dropna(subset=["trade_date", "close"]).sort_values("trade_date")
+    frame["open"] = frame["previous"]
+    frame["high"] = frame["highest"]
+    frame["low"] = frame["lowest"]
+    return frame[["trade_date", "open", "high", "low", "close", "volume"]].reset_index(drop=True)
+
+
 __all__ = [
     "DatabaseOnlySnapshot", "database_only_enabled",
-    "load_latest_database_ranking", "load_market_panel",
+    "load_latest_database_ranking", "load_market_panel", "load_benchmark_frame",
 ]
