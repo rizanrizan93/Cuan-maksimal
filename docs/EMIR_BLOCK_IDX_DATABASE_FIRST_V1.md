@@ -6,12 +6,12 @@ The interactive EMIR scanner is a database consumer. It must not call Yahoo, Goo
 
 - Dedicated project: `Idx emir framework v2`
 - Project ref: `vbtpwpmkfxzqeuvztcmz`
-- Official producer host: `https://block.idx.id`
+- Official primary API host: `https://block.idx.id` (official XBRL attachment bytes may be served by IDX-owned `idx.id`/`idx.co.id` static hosts)
 - Historical bootstrap requested on 2026-09-14: `2026-03-14` through `2026-09-14`
 - Interactive data mode: `CAK_SCAN_DATABASE_ONLY=1`
 - Feature contract: `EMIR_BLOCK_IDX_FEATURE_V1`
 
-The Shared Evidence Hub, PASTICUAN tables, and IDX Flow `flow_*` tables are not ranking inputs for this contract.
+The Shared Evidence Hub, PASTICUAN tables, and IDX Flow `flow_*` tables are not ranking inputs for this contract. The Block IDX endpoint supplies official discovery/metadata; downloaded financial attachment bytes retain their original official IDX URL.
 
 ## Acquisition tiers
 
