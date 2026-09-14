@@ -196,6 +196,17 @@ class SupabaseSink:
             total += len(batch)
         return total
 
+    def select(self, table: str, params: Mapping[str, Any]) -> list[dict[str, Any]]:
+        response = requests.get(
+            f"{self.url}/rest/v1/{table}",
+            headers=self.headers,
+            params=dict(params),
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, list) else []
+
     def rpc(self, name: str, payload: Mapping[str, Any] | None = None) -> Any:
         response = requests.post(
             f"{self.url}/rest/v1/rpc/{name}",
