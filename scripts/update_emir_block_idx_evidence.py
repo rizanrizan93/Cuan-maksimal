@@ -5,6 +5,8 @@ from datetime import date, datetime, timedelta
 import json
 import sys
 import time
+
+import pandas as pd
 from zoneinfo import ZoneInfo
 
 from emir_block_idx_eod import (
@@ -38,10 +40,9 @@ def bounds(args: argparse.Namespace) -> tuple[date, date]:
     if args.from_date:
         start = args.from_date
     else:
-        # Six calendar months without an optional dependency. Backfill is
-        # intentionally allowed to include non-session weekdays; empty official
-        # StockSummary is recorded as NO_DATA and never synthesized.
-        start = end - timedelta(days=max(1, int(args.months)) * 31)
+        # Exact calendar-month subtraction; for 2026-09-14 this starts
+        # 2026-03-14. Empty non-session weekdays are never synthesized.
+        start = (pd.Timestamp(end) - pd.DateOffset(months=max(1, int(args.months)))).date()
     if start > end:
         raise ValueError("from-date must be on or before to-date")
     if (end - start).days > 370:
