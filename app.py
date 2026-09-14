@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+os.environ.setdefault("CAK_SCAN_DATABASE_ONLY", "1")
+
 from typing import Any
 
 import numpy as np
@@ -90,6 +93,7 @@ from persistent_cache import (
 )
 from checkpoint_ui import checkpoint_execution_state
 from dashboard_price_overlay import apply_current_market_price_overlay
+from emir_database_only import load_latest_database_ranking
 
 from persistence import SCANNER_VERSION as PERSISTENCE_SCANNER_VERSION
 from future_fundamental import SCANNER_VERSION as FUTURE_FUNDAMENTAL_SCANNER_VERSION
@@ -738,6 +742,45 @@ if not active_job and latest_any and str(latest_any.get("status")) in {"COMPLETE
             st.session_state["emir_scan"] = loaded
         else:
             st.warning("Radar hasil terakhir tidak ditemukan lengkap di database.")
+
+st.subheader("Official IDX Database Ranking")
+db_ranking, db_execution_top3, db_snapshot = load_latest_database_ranking(db_config, limit=50)
+st.caption(
+    "Jalur cepat resmi: scanner hanya membaca feature/ranking EOD yang sudah dinormalisasi dari block.idx.id; "
+    "tidak ada panggilan provider pasar dari sesi Streamlit."
+)
+if db_snapshot.state in {"READY", "INSUFFICIENT_EXECUTION_READY"}:
+    fast_metrics = st.columns(4)
+    fast_metrics[0].metric("Official EOD", db_snapshot.rank_date or "-")
+    fast_metrics[1].metric("Ranked", db_snapshot.ranked_rows)
+    fast_metrics[2].metric("Execution-ready", db_snapshot.execution_ready_rows)
+    fast_metrics[3].metric("Top 3", db_snapshot.top3_rows)
+    if not db_execution_top3.empty:
+        st.markdown("#### Top 3 Execution — database only")
+        fast_cols = [
+            "execution_rank", "ticker", "execution_score", "emir_score",
+            "entry_price", "stop_loss", "tp1", "tp2", "rr_tp1",
+            "geometry_state", "source_state",
+        ]
+        safe_dataframe(
+            db_execution_top3[[c for c in fast_cols if c in db_execution_top3.columns]],
+            width="stretch", hide_index=True,
+        )
+    else:
+        st.warning("Gate tidak memaksakan tiga nama: belum ada tiga saham yang memenuhi akumulasi, tren, likuiditas, fundamental resmi, risk-event, dan RR minimum.")
+    with st.expander("Top 50 ranking resmi"):
+        rank_cols = [
+            "overall_rank", "ticker", "emir_score", "fundamental_score",
+            "smart_money_score", "momentum_score", "liquidity_score",
+            "return_20d_pct", "foreign_positive_days_20d", "adtv_20d",
+            "execution_eligible", "blocker",
+        ]
+        safe_dataframe(
+            db_ranking[[c for c in rank_cols if c in db_ranking.columns]],
+            width="stretch", hide_index=True,
+        )
+else:
+    st.info(f"Official database ranking: {db_snapshot.state}. {db_snapshot.detail}")
 
 result = st.session_state.get("emir_scan")
 if not result:
