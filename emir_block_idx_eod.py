@@ -2,8 +2,9 @@ from __future__ import annotations
 
 """Official Block IDX producer for EMIR.
 
-This module is intentionally the only EMIR runtime allowed to call block.idx.id.
-The interactive scanner consumes normalized/cache tables through Supabase only.
+This module is intentionally the only EMIR runtime allowed to call Block IDX primary APIs.
+Official XBRL attachment bytes may use IDX-owned static hosts. The interactive
+scanner consumes normalized/cache tables through Supabase only.
 """
 
 from dataclasses import dataclass
