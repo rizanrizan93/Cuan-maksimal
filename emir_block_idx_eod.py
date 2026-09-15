@@ -405,7 +405,6 @@ class EmirBlockIdxProducer:
             ("uma", {"dateFrom": dfrom, "dateTo": dto, "indexfrom": 0, "pagesize": 5000}, "UMA"),
             ("suspension", {"dateFrom": dfrom, "dateTo": dto, "indexfrom": 0, "pagesize": 5000}, "SUSPENSION"),
             ("issued_history", {"caType": "", "dateFrom": dfrom, "dateTo": dto, "start": 0, "length": 5000}, "ISSUED_HISTORY"),
-            ("announcements", {"keywords": "", "dateFrom": dfrom, "dateTo": dto, "indexFrom": 0, "pageSize": 5000, "lang": "id"}, "ANNOUNCEMENT"),
         )
         counts: dict[str, int] = {}
         for key, params, family in requests_to_make:
@@ -426,6 +425,34 @@ class EmirBlockIdxProducer:
                     "failure_class": type(exc).__name__, "message": str(exc)[:1000],
                     "retryable": any(token in str(exc) for token in ("429", "500", "502", "503", "504", "timeout")),
                 }], "endpoint_key,target_date,failure_class,message", chunk=1)
+
+        spec = _spec("announcements")
+        announcement_total = 0
+        try:
+            page = 1
+            while page <= 100:
+                payload, url, _ = self.client.get_json(spec, {
+                    "keywords": "", "dateFrom": dfrom, "dateTo": dto,
+                    "pageNumber": page, "pageSize": 1000, "lang": "id",
+                })
+                rows = generic_events(payload, "ANNOUNCEMENT", url, end)
+                announcement_total += self.sink.upsert(
+                    "cak_idx_events", rows,
+                    "event_family,event_type,event_date,source_ref,payload_hash",
+                ) if rows else 0
+                self._manifest(spec, end, url, payload, len(rows), "VALID_EMPTY" if not rows else "VALID")
+                page_count = max(1, int(payload.get("PageCount") or 1)) if isinstance(payload, dict) else 1
+                if page >= page_count:
+                    break
+                page += 1
+            counts["announcements"] = announcement_total
+        except Exception as exc:
+            counts["announcements"] = announcement_total
+            self.sink.upsert("cak_idx_ingestion_failures", [{
+                "endpoint_key": "announcements", "target_date": end.isoformat(),
+                "failure_class": type(exc).__name__, "message": str(exc)[:1000],
+                "retryable": any(token in str(exc) for token in ("429", "500", "502", "503", "504", "timeout")),
+            }], "endpoint_key,target_date,failure_class,message", chunk=1)
         return counts
 
     def collect_company_reference(self, observed_on: date) -> int:
