@@ -108,12 +108,26 @@ def test_database_contract_has_fail_closed_top3_and_no_cte_scope_leak():
     top3 = sql.split("insert into public.cak_idx_top3_execution", 1)[1]
     assert "from scored" not in top3.lower()
     assert "from public.cak_idx_rank_daily r" in top3
+    assert "cross_ranked as (" in sql.lower()
+    assert "from cross c" not in sql.lower()
 
 
 def test_workflow_is_after_close_idempotent_and_dedicated():
     workflow = Path(".github/workflows/emir-block-idx-eod.yml").read_text()
     assert 'cron: "30 10,11 * * 1-5"' in workflow
     assert "cancel-in-progress: false" in workflow
-    assert "vbtpwpmkfxzqeuvztcmz.supabase.co" in workflow
+    assert "nredhspgvrqapycpakay.supabase.co" in workflow
     assert "CAK_SCAN_DATABASE_ONLY" in workflow
     assert "--mode" in workflow
+
+
+
+def test_storage_guard_is_enforced_by_producer_and_bounded_to_500_mib():
+    migration = Path("database/migration_v31_emir_backup_salvage_storage_guard.sql").read_text()
+    producer = Path("scripts/update_emir_block_idx_evidence.py").read_text()
+    assert "524288000" in migration
+    assert "492830720" in migration
+    assert "clock_timestamp()" in migration
+    assert 'sink.rpc("cak_prune_storage_v1"' in producer
+    assert producer.count('sink.rpc("cak_prune_storage_v1"') == 2
+    assert '"HARD_STOP"' in producer
