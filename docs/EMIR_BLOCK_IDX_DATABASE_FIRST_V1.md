@@ -86,7 +86,7 @@ The normalized six-month market panel is the reusable fact layer. Daily rank and
 
 Raw payload bodies are not duplicated indefinitely. The manifest retains endpoint, date, URL, row counts, payload SHA‑256, validation state, producer version, and fetch time. Event rows preserve their raw record for forensic review.
 
-The hard quota is 500 MiB (524,288,000 bytes), with warning at 420 MiB and an ingestion hard-stop at 470 MiB. Every producer run prunes before and after acquisition: market/rank/manifest data keep six calendar months, endpoint audit data 30–90 days, events 18 months, only two company snapshots and eight fundamental snapshots per ticker, and only the five latest legacy radar runs.
+The hard quota is 500 MiB (524,288,000 bytes), with warning at 420 MiB and an ingestion hard-stop at 470 MiB. Every producer run prunes before and after acquisition: market/rank/manifest data keep six calendar months, endpoint audit data 30–90 days, events six calendar months, only two company snapshots and eight fundamental snapshots per ticker, and only the five latest legacy radar runs.
 
 The supplied legacy gzip was valid as a compressed stream but its logical SQL ended inside the `cak_research_memory` COPY block. It therefore cannot be restored blindly. Migration v31 creates compatibility tables and records a SHA-256 salvage manifest; only completed COPY blocks and compact, validated recent/latest rows are imported.
 
