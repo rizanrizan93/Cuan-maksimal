@@ -4,10 +4,9 @@
 
 The interactive EMIR scanner is a database consumer. It must not call Yahoo, Google, KSEI, IDX, ZAPI, or another market provider while a user is scanning. Official acquisition runs in the scheduled GitHub producer and writes only to the dedicated EMIR v2 Supabase project.
 
-- Dedicated project: `Idx emir framework v2`
-- Project ref: `vbtpwpmkfxzqeuvztcmz`
+- Dedicated project ref: `nredhspgvrqapycpakay` (new EMIR/Cuan-maksimal target)
 - Official primary API host: `https://block.idx.id` (official XBRL attachment bytes may be served by IDX-owned `idx.id`/`idx.co.id` static hosts)
-- Historical bootstrap requested on 2026-09-14: `2026-03-14` through `2026-09-14`
+- Historical bootstrap window as of 2026-09-15: `2026-03-15` through `2026-09-15`
 - Interactive data mode: `CAK_SCAN_DATABASE_ONLY=1`
 - Feature contract: `EMIR_BLOCK_IDX_FEATURE_V1`
 
@@ -30,7 +29,7 @@ Only direct routes that have a verified contract are enabled. Other known IDX da
 
 The backfill is date-major:
 
-1. For each weekday from 2026-03-14 through 2026-09-14, request StockSummary, IndexSummary, and BrokerSummary once.
+1. For each weekday from 2026-03-15 through 2026-09-15, request StockSummary, IndexSummary, and BrokerSummary once.
 2. Validate requested date, payload completeness, non-negative market quantities, official host, and no redirects.
 3. Upsert normalized facts by natural key. A rerun is idempotent.
 4. Fetch event families for the whole bounded range and deduplicate by event key plus payload hash.
@@ -43,8 +42,8 @@ Manual workflow input:
 
 ```text
 mode: backfill
-from_date: 2026-03-14
-to_date: 2026-09-14
+from_date: 2026-03-15
+to_date: 2026-09-15
 fundamental_limit: 60
 ```
 
@@ -87,13 +86,18 @@ The normalized six-month market panel is the reusable fact layer. Daily rank and
 
 Raw payload bodies are not duplicated indefinitely. The manifest retains endpoint, date, URL, row counts, payload SHA‑256, validation state, producer version, and fetch time. Event rows preserve their raw record for forensic review.
 
+The hard quota is 500 MiB (524,288,000 bytes), with warning at 420 MiB and an ingestion hard-stop at 470 MiB. Every producer run prunes before and after acquisition: market/rank/manifest data keep six calendar months, endpoint audit data 30–90 days, events 18 months, only two company snapshots and eight fundamental snapshots per ticker, and only the five latest legacy radar runs.
+
+The supplied legacy gzip was valid as a compressed stream but its logical SQL ended inside the `cak_research_memory` COPY block. It therefore cannot be restored blindly. Migration v31 creates compatibility tables and records a SHA-256 salvage manifest; only completed COPY blocks and compact, validated recent/latest rows are imported.
+
 ## Activation sequence
 
-1. Restore/activate the dedicated EMIR v2 Supabase project.
-2. Apply `database/migration_v30_emir_block_idx_database_first.sql`.
+1. Apply `database/migration_v30_emir_block_idx_database_first.sql`.
+2. Apply `database/migration_v31_emir_backup_salvage_storage_guard.sql`.
 3. Run `database/verify_v30_emir_block_idx_database_first.sql`.
-4. Dispatch the EOD workflow once in backfill mode with the exact dates above.
-5. Verify session coverage, endpoint manifests, rank count, zero guardrail bypasses, and Top‑3.
-6. Merge/deploy the application with `CAK_SCAN_DATABASE_ONLY=1`.
+4. Point GitHub secrets `SUPABASE_URL` and `SUPABASE_SECRET_KEY` to project `nredhspgvrqapycpakay`.
+5. Dispatch the EOD workflow once in backfill mode with the exact dates above.
+6. Verify session coverage, endpoint manifests, storage state, rank count, zero guardrail bypasses, and Top‑3.
+7. Merge/deploy the application with `CAK_SCAN_DATABASE_ONLY=1`.
 
-The current project cannot ingest while Supabase reports it inactive or under organization service restrictions. Code and migration readiness do not count as a completed backfill.
+The target project is active and its compact legacy salvage is validated. A completed six-month official Block IDX backfill is still a distinct operational checkpoint and must be verified from ingestion manifests before it is claimed complete.
