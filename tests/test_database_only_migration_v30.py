@@ -54,3 +54,12 @@ def test_top3_evidence_bundle_joins_database_evidence():
     assert "cak_idx_ownership_snapshot" in sql
     assert "cak_idx_events" in sql
     assert "grant execute" in sql and "service_role" in sql
+
+
+def test_top3_execution_levels_are_idx_tick_executable():
+    sql = (ROOT / "database" / "migration_v33_idx_tick_executable_top3.sql").read_text(encoding="utf-8").lower()
+    assert "cak_idx_tick_size_v1" in sql
+    assert "cak_idx_floor_to_tick_v1" in sql
+    assert "price_fraction_state','idx_tick_executable'" in sql
+    for threshold in ("p_price < 200", "p_price < 500", "p_price < 2000", "p_price < 5000"):
+        assert threshold in sql

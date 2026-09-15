@@ -511,6 +511,7 @@ if scan_mode == "EMIR_DATABASE_FAST_900":
             "execution_rank", "ticker", "company_name", "sector", "execution_score", "emir_score", "entry_price",
             "stop_loss", "tp1", "tp2", "rr_tp1", "geometry_state", "decision_state",
             "controller_pct", "public_pct", "treasury_pct", "holder_count", "recent_event_count",
+            "price_fraction_state",
         ) if column in database_snapshot.top3.columns]
         safe_dataframe(database_snapshot.top3[top3_columns], width="stretch", hide_index=True)
     ranking_columns = [column for column in (
