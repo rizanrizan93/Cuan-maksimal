@@ -90,6 +90,7 @@ from persistent_cache import (
 )
 from checkpoint_ui import checkpoint_execution_state
 from dashboard_price_overlay import apply_current_market_price_overlay
+from database_only_runtime import load_database_only_snapshot
 
 from persistence import SCANNER_VERSION as PERSISTENCE_SCANNER_VERSION
 from future_fundamental import SCANNER_VERSION as FUTURE_FUNDAMENTAL_SCANNER_VERSION
@@ -400,8 +401,8 @@ with st.sidebar:
     universe_file = st.file_uploader("Upload CSV ticker", type=["csv"], key="universe")
     scan_mode = st.selectbox(
         "Mode",
-        ["EMIR_AUTONOMOUS_HYBRID_400_TO_DEEP", "EMIR_AUTONOMOUS_DEEP_REVIEW", "EMIR_FLOW_RADAR_ONLY"],
-        help="HYBRID memproses OHLCV seluruh universe, lalu deep review progresif sesuai cakupan yang dipilih.",
+        ["EMIR_DATABASE_FAST_900", "EMIR_AUTONOMOUS_HYBRID_400_TO_DEEP", "EMIR_AUTONOMOUS_DEEP_REVIEW", "EMIR_FLOW_RADAR_ONLY"],
+        help="DATABASE_FAST membaca evidence dan ranking yang sudah dihitung setelah penutupan, tanpa provider online.",
     )
     period = st.selectbox("OHLCV history", ["3y", "5y"], index=1)
     completed_only = st.checkbox("Gunakan completed daily session saja", value=True)
@@ -476,6 +477,52 @@ with st.sidebar:
         "Deep review berjalan progresif per checkpoint dan disimpan ke database job. Bila koneksi terputus, "
         "buka kembali lalu lanjutkan; ticker yang sudah selesai tidak diulang."
     )
+
+if scan_mode == "EMIR_DATABASE_FAST_900":
+    st.markdown("### EMIR Database-Only — Ranking & Top 3 Execution")
+    st.caption(
+        "Seluruh harga, foreign flow, likuiditas, fundamental resmi, corporate action, UMA, "
+        "suspensi, ranking, dan geometri eksekusi dibaca dari Supabase. Tidak ada pencarian "
+        "Yahoo, Google, KSEI, atau provider online pada jalur ini."
+    )
+    if not db_config.ready:
+        st.error("Database EMIR belum dikonfigurasi; mode database-only dihentikan.")
+        st.stop()
+    try:
+        database_snapshot = load_database_only_snapshot(db_config)
+    except Exception as exc:
+        st.error(f"Database-only source gagal dibaca: {type(exc).__name__}: {exc}")
+        st.stop()
+    health = database_snapshot.health
+    h1, h2, h3, h4 = st.columns(4)
+    h1.metric("Sesi resmi", str(health.get("latest_market_date") or "—"))
+    h2.metric("Ticker market", int(health.get("market_tickers") or 0))
+    h3.metric("Ticker fundamental", int(health.get("fundamental_tickers") or 0))
+    h4.metric("Database MiB", f"{float(health.get('database_bytes') or 0)/1024/1024:.1f}")
+    if database_snapshot.state != "DATABASE_ONLY_READY":
+        st.warning(
+            "Top 3 tidak diterbitkan karena sesi market/ranking belum sinkron atau kandidat "
+            "EXECUTION_READY belum tepat tiga. Ranking riset tetap ditampilkan."
+        )
+    else:
+        st.success("DATABASE_ONLY_READY · Top 3 berasal dari snapshot EOD resmi yang sama.")
+    if not database_snapshot.top3.empty:
+        top3_columns = [column for column in (
+            "execution_rank", "ticker", "company_name", "sector", "execution_score", "emir_score", "entry_price",
+            "stop_loss", "tp1", "tp2", "rr_tp1", "geometry_state", "decision_state",
+            "controller_pct", "public_pct", "treasury_pct", "holder_count", "recent_event_count",
+        ) if column in database_snapshot.top3.columns]
+        safe_dataframe(database_snapshot.top3[top3_columns], width="stretch", hide_index=True)
+    ranking_columns = [column for column in (
+        "overall_rank", "execution_rank", "ticker", "emir_score", "execution_score",
+        "fundamental_score", "growth_score", "balance_score", "cashflow_score",
+        "smart_money_score", "structure_score", "momentum_score", "liquidity_score",
+        "return_20d_pct", "foreign_net_20d", "foreign_positive_days_20d", "adtv_20d",
+        "entry_price", "stop_loss", "structural_tp1", "tp2", "rr_tp1",
+        "setup_state", "execution_eligible", "blocker",
+    ) if column in database_snapshot.ranking.columns]
+    safe_dataframe(database_snapshot.ranking[ranking_columns], width="stretch", hide_index=True)
+    st.stop()
 
 recovered_job = None
 if universe_file is None and db_config.ready:

@@ -1,0 +1,684 @@
+-- EMIR Block IDX database-only runtime, compact evidence, and execution ranking.
+-- Target contract: six months of official market/event evidence, current reference
+-- snapshots, server-side ranking, and a hard database-size guard below 500 MiB.
+
+create extension if not exists http with schema extensions;
+create extension if not exists pg_cron;
+create extension if not exists pgcrypto with schema extensions;
+
+create table if not exists public.cak_idx_broker_directory (
+  broker_code text primary key,
+  broker_name text not null,
+  status_name text,
+  is_active boolean not null default false,
+  city text,
+  license_text text,
+  profile_url text,
+  source_url text not null,
+  payload_hash text not null,
+  source_verified boolean not null default true,
+  observed_on date not null,
+  ingested_at timestamptz not null default now(),
+  constraint cak_idx_broker_directory_code_ck
+    check (broker_code = upper(trim(broker_code)) and length(broker_code) between 1 and 8)
+);
+
+create table if not exists public.cak_idx_shareholder_snapshot (
+  ticker text not null,
+  observed_on date not null,
+  holder_identity_hash text not null,
+  holder_name text not null,
+  shares_held numeric,
+  ownership_percentage numeric,
+  holder_category text,
+  is_controller boolean not null default false,
+  source_url text not null,
+  payload_hash text not null,
+  source_verified boolean not null default true,
+  ingested_at timestamptz not null default now(),
+  primary key (ticker, observed_on, holder_identity_hash),
+  constraint cak_idx_shareholder_percentage_ck
+    check (ownership_percentage is null or ownership_percentage between 0 and 100)
+);
+
+create index if not exists cak_idx_shareholder_ticker_date_idx
+  on public.cak_idx_shareholder_snapshot (ticker, observed_on desc);
+create index if not exists cak_idx_shareholder_controller_idx
+  on public.cak_idx_shareholder_snapshot (observed_on desc, ticker)
+  where is_controller;
+
+create table if not exists public.cak_idx_financial_filing_catalog (
+  ticker text not null,
+  report_year integer not null,
+  report_period text not null,
+  period_end date not null,
+  file_modified_at timestamptz not null,
+  issuer_name text,
+  attachments jsonb not null default '[]'::jsonb,
+  source_url text not null,
+  payload_hash text not null,
+  source_verified boolean not null default true,
+  pit_state text not null default 'DISCOVERY_METADATA_NOT_PUBLICATION_CLOCK',
+  ingested_at timestamptz not null default now(),
+  primary key (ticker, report_year, report_period, file_modified_at, payload_hash),
+  constraint cak_idx_financial_filing_period_ck
+    check (report_period in ('TW1','TW2','TW3','AUDIT'))
+);
+
+create index if not exists cak_idx_financial_filing_latest_idx
+  on public.cak_idx_financial_filing_catalog (ticker, period_end desc, file_modified_at desc);
+
+alter table public.cak_idx_rank_daily
+  add column if not exists growth_score numeric,
+  add column if not exists balance_score numeric,
+  add column if not exists cashflow_score numeric,
+  add column if not exists structure_score numeric,
+  add column if not exists bos_20d boolean not null default false,
+  add column if not exists overextended boolean not null default false,
+  add column if not exists tp2 numeric,
+  add column if not exists setup_state text,
+  add column if not exists data_completeness_pct numeric;
+
+alter table public.cak_idx_broker_directory enable row level security;
+alter table public.cak_idx_shareholder_snapshot enable row level security;
+alter table public.cak_idx_financial_filing_catalog enable row level security;
+revoke all on public.cak_idx_broker_directory from public, anon, authenticated;
+revoke all on public.cak_idx_shareholder_snapshot from public, anon, authenticated;
+revoke all on public.cak_idx_financial_filing_catalog from public, anon, authenticated;
+grant select, insert, update, delete on public.cak_idx_broker_directory to service_role;
+grant select, insert, update, delete on public.cak_idx_shareholder_snapshot to service_role;
+grant select, insert, update, delete on public.cak_idx_financial_filing_catalog to service_role;
+
+insert into public.cak_idx_endpoint_catalog
+  (endpoint_key,family,path,acquisition_class,cadence,history_supported,scoring_role,route_state,enabled)
+values
+  ('broker_directory','BROKER_REFERENCE','/primary/ExchangeMember/GetBroker','C','WEEKLY',false,'IDENTITY_ONLY','VERIFIED',true),
+  ('companies','COMPANY_REFERENCE','/primary/ListedCompany/GetCompanyProfiles','C','DAILY',false,'UNIVERSE_SECTOR_BOARD','VERIFIED',true),
+  ('company_profile','COMPANY_DETAIL','/primary/ListedCompany/GetCompanyProfilesDetail','C','ROTATING_DAILY',false,'CONTROLLER_FREE_FLOAT_DIVIDEND','VERIFIED',true),
+  ('financial_report','FINANCIAL_REPORT','/primary/ListedCompany/GetFinancialReport','B','DAILY',true,'OFFICIAL_FILING_DISCOVERY','VERIFIED',true),
+  ('company_announcements','ANNOUNCEMENT','/primary/ListedCompany/GetProfileAnnouncement','B','EOD_DELTA',true,'FINANCIAL_PIT_CLOCK','VERIFIED',true),
+  ('stock_summary','MARKET_DAILY','/primary/TradingSummary/GetStockSummary','A','EOD',true,'PRICE_LIQUIDITY_FOREIGN','VERIFIED',true),
+  ('index_summary','INDEX_DAILY','/primary/TradingSummary/GetIndexSummary','A','EOD',true,'MARKET_SECTOR_REGIME','VERIFIED',true),
+  ('broker_summary','BROKER_MARKET_DAILY','/primary/TradingSummary/GetBrokerSummary','D','EOD',true,'MARKET_ONLY_NOT_TICKER_FLOW','VERIFIED',true),
+  ('announcements','ANNOUNCEMENT','/primary/NewsAnnouncement/GetAllAnnouncement','B','EOD_DELTA',true,'CATALYST_RISK','VERIFIED',true),
+  ('uma','RISK_EVENT','/primary/NewsAnnouncement/GetUma','B','EOD_DELTA',true,'EXECUTION_GUARD','VERIFIED',true),
+  ('suspension','RISK_EVENT','/primary/NewsAnnouncement/GetSuspension','B','EOD_DELTA',true,'HARD_BLOCK','VERIFIED',true),
+  ('issued_history','CAPITAL_ACTION','/primary/ListingActivity/GetIssuedHistory','B','EOD_DELTA',true,'DILUTION_PRICE_ADJUSTMENT','VERIFIED',true)
+on conflict (endpoint_key) do update set
+  family=excluded.family,path=excluded.path,acquisition_class=excluded.acquisition_class,
+  cadence=excluded.cadence,history_supported=excluded.history_supported,
+  scoring_role=excluded.scoring_role,route_state=excluded.route_state,
+  enabled=excluded.enabled,updated_at=clock_timestamp();
+
+create or replace function public.cak_idx_refresh_reference_v3(
+  p_observed_on date default ((now() at time zone 'Asia/Jakarta')::date)
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public, extensions
+as $$
+declare
+  v_company_url constant text := 'https://block.idx.id/primary/ListedCompany/GetCompanyProfiles?start=0&length=2000';
+  v_broker_url constant text := 'https://block.idx.id/primary/ExchangeMember/GetBroker?length=200&start=0';
+  v_companies jsonb;
+  v_brokers jsonb;
+  v_company_rows integer := 0;
+  v_broker_rows integer := 0;
+begin
+  v_companies := public.cak_idx_http_json_v1(v_company_url);
+  if jsonb_typeof(v_companies->'data') is distinct from 'array'
+     or jsonb_array_length(v_companies->'data') < 900
+     or jsonb_array_length(v_companies->'data') <> coalesce((v_companies->>'recordsTotal')::integer,0) then
+    raise exception 'IDX company registry incomplete';
+  end if;
+
+  insert into public.cak_idx_company_snapshot
+    (ticker,observed_on,company_name,sector,subsector,listing_date,source_url,
+     payload_hash,source_verified,raw_payload)
+  select
+    upper(trim(x->>'KodeEmiten')),p_observed_on,nullif(trim(x->>'NamaEmiten'),''),
+    nullif(trim(x->>'Sektor'),''),nullif(trim(x->>'SubSektor'),''),
+    case when left(coalesce(x->>'TanggalPencatatan',''),10) ~ '^\\d{4}-\\d{2}-\\d{2}$'
+      then left(x->>'TanggalPencatatan',10)::date end,
+    v_company_url,encode(extensions.digest(convert_to(x::text,'UTF8'),'sha256'),'hex'),true,x
+  from jsonb_array_elements(v_companies->'data') x
+  where coalesce((x->>'EfekEmiten_Saham')::boolean,false)
+    and upper(trim(coalesce(x->>'KodeEmiten',''))) ~ '^[A-Z0-9]{2,12}$'
+  on conflict (ticker,observed_on) do update set
+    company_name=excluded.company_name,sector=excluded.sector,subsector=excluded.subsector,
+    listing_date=excluded.listing_date,source_url=excluded.source_url,
+    payload_hash=excluded.payload_hash,source_verified=true,raw_payload=excluded.raw_payload,
+    ingested_at=clock_timestamp();
+  get diagnostics v_company_rows = row_count;
+
+  v_brokers := public.cak_idx_http_json_v1(v_broker_url);
+  if jsonb_typeof(v_brokers->'data') is distinct from 'array'
+     or jsonb_array_length(v_brokers->'data') < 80
+     or jsonb_array_length(v_brokers->'data') <> coalesce((v_brokers->>'recordsTotal')::integer,0) then
+    raise exception 'IDX broker registry incomplete';
+  end if;
+
+  insert into public.cak_idx_broker_directory
+    (broker_code,broker_name,status_name,is_active,city,license_text,profile_url,
+     source_url,payload_hash,source_verified,observed_on)
+  select
+    upper(trim(x->>'Code')),trim(x->>'Name'),nullif(trim(x->>'StatusName'),''),
+    lower(trim(coalesce(x->>'StatusName','')))='aktif',nullif(trim(x->>'City'),''),
+    nullif(trim(x->>'License'),''),
+    'https://block.idx.id/id/anggota-bursa-dan-partisipan/profil-anggota-bursa/'||upper(trim(x->>'Code')),
+    v_broker_url,encode(extensions.digest(convert_to(x::text,'UTF8'),'sha256'),'hex'),true,p_observed_on
+  from jsonb_array_elements(v_brokers->'data') x
+  where upper(trim(coalesce(x->>'Code',''))) ~ '^[A-Z0-9]{1,8}$'
+    and nullif(trim(x->>'Name'),'') is not null
+  on conflict (broker_code) do update set
+    broker_name=excluded.broker_name,status_name=excluded.status_name,is_active=excluded.is_active,
+    city=excluded.city,license_text=excluded.license_text,profile_url=excluded.profile_url,
+    source_url=excluded.source_url,payload_hash=excluded.payload_hash,source_verified=true,
+    observed_on=excluded.observed_on,ingested_at=clock_timestamp();
+  get diagnostics v_broker_rows = row_count;
+
+  return jsonb_build_object('state','VALID','companies',v_company_rows,'brokers',v_broker_rows,
+    'observed_on',p_observed_on);
+end;
+$$;
+
+create or replace function public.cak_idx_refresh_shareholders_v3(
+  p_offset integer default 0,
+  p_limit integer default 100,
+  p_observed_on date default ((now() at time zone 'Asia/Jakarta')::date)
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public, extensions
+as $$
+declare
+  r record;
+  v_url text;
+  v_payload jsonb;
+  v_accepted integer := 0;
+  v_attempted integer := 0;
+  v_failed integer := 0;
+  v_n integer := 0;
+begin
+  if p_offset < 0 or p_limit < 1 or p_limit > 150 then
+    raise exception 'invalid shareholder rotation window';
+  end if;
+  for r in
+    select distinct on (ticker) ticker
+    from public.cak_idx_company_snapshot
+    where source_verified
+    order by ticker, observed_on desc
+    offset p_offset limit p_limit
+  loop
+    v_attempted := v_attempted + 1;
+    v_url := 'https://block.idx.id/primary/ListedCompany/GetCompanyProfilesDetail?KodeEmiten='||r.ticker;
+    begin
+      v_payload := public.cak_idx_http_json_v1(v_url);
+      if upper(trim(coalesce(v_payload#>>'{Search,KodeEmiten}',''))) <> r.ticker then
+        raise exception 'ticker identity mismatch';
+      end if;
+      insert into public.cak_idx_shareholder_snapshot
+        (ticker,observed_on,holder_identity_hash,holder_name,shares_held,
+         ownership_percentage,holder_category,is_controller,source_url,payload_hash,source_verified)
+      select
+        r.ticker,p_observed_on,
+        encode(extensions.digest(convert_to(lower(trim(x->>'Nama'))||'|'||lower(trim(coalesce(x->>'Kategori',''))),'UTF8'),'sha256'),'hex'),
+        trim(x->>'Nama'),public.cak_idx_safe_numeric_v1(x->>'Jumlah'),
+        public.cak_idx_safe_numeric_v1(x->>'Persentase'),nullif(trim(x->>'Kategori'),''),
+        lower(trim(coalesce(x->>'Pengendali','false'))) in ('true','1','yes'),
+        v_url,encode(extensions.digest(convert_to(x::text,'UTF8'),'sha256'),'hex'),true
+      from jsonb_array_elements(coalesce(v_payload->'PemegangSaham','[]'::jsonb)) x
+      where nullif(trim(x->>'Nama'),'') is not null
+        and (public.cak_idx_safe_numeric_v1(x->>'Persentase') is null
+             or public.cak_idx_safe_numeric_v1(x->>'Persentase') between 0 and 100)
+      on conflict (ticker,observed_on,holder_identity_hash) do update set
+        holder_name=excluded.holder_name,shares_held=excluded.shares_held,
+        ownership_percentage=excluded.ownership_percentage,
+        holder_category=excluded.holder_category,is_controller=excluded.is_controller,
+        source_url=excluded.source_url,payload_hash=excluded.payload_hash,
+        source_verified=true,ingested_at=clock_timestamp();
+      get diagnostics v_n = row_count;
+      v_accepted := v_accepted + v_n;
+    exception when others then
+      v_failed := v_failed + 1;
+    end;
+  end loop;
+  return jsonb_build_object('state',case when v_failed=0 then 'VALID' else 'PARTIAL' end,
+    'offset',p_offset,'attempted',v_attempted,'accepted',v_accepted,'failed',v_failed,
+    'observed_on',p_observed_on);
+end;
+$$;
+
+create or replace function public.cak_idx_refresh_financial_catalog_v3(
+  p_year integer,
+  p_period text,
+  p_observed_on date default ((now() at time zone 'Asia/Jakarta')::date)
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public, extensions
+as $$
+declare
+  v_period text := upper(trim(p_period));
+  v_url text;
+  v_payload jsonb;
+  v_rows integer := 0;
+begin
+  if p_year < 2000 or p_year > extract(year from p_observed_on)::integer
+     or v_period not in ('TW1','TW2','TW3','AUDIT') then
+    raise exception 'invalid financial catalog period';
+  end if;
+  v_url := 'https://block.idx.id/primary/ListedCompany/GetFinancialReport?periode='||
+    case when v_period='AUDIT' then 'audit' else v_period end||'&year='||p_year::text||
+    '&indexFrom=0&pageSize=2000&reportType=rdf&kodeEmiten=';
+  v_payload := public.cak_idx_http_json_v1(v_url);
+  if jsonb_typeof(v_payload->'Results') is distinct from 'array' then
+    raise exception 'IDX financial catalog payload invalid';
+  end if;
+  insert into public.cak_idx_financial_filing_catalog
+    (ticker,report_year,report_period,period_end,file_modified_at,issuer_name,
+     attachments,source_url,payload_hash,source_verified,pit_state)
+  select
+    upper(trim(x->>'KodeEmiten')),p_year,v_period,
+    make_date(p_year,case v_period when 'TW1' then 3 when 'TW2' then 6 when 'TW3' then 9 else 12 end,
+      case v_period when 'TW1' then 31 when 'TW2' then 30 when 'TW3' then 30 else 31 end),
+    (x->>'File_Modified')::timestamptz,nullif(trim(x->>'NamaEmiten'),''),
+    coalesce(x->'Attachments','[]'::jsonb),v_url,
+    encode(extensions.digest(convert_to(x::text,'UTF8'),'sha256'),'hex'),true,
+    'DISCOVERY_METADATA_NOT_PUBLICATION_CLOCK'
+  from jsonb_array_elements(v_payload->'Results') x
+  where upper(trim(coalesce(x->>'KodeEmiten',''))) ~ '^[A-Z0-9]{2,12}$'
+    and nullif(x->>'File_Modified','') is not null
+    and jsonb_array_length(coalesce(x->'Attachments','[]'::jsonb))>0
+  on conflict (ticker,report_year,report_period,file_modified_at,payload_hash) do update set
+    issuer_name=excluded.issuer_name,attachments=excluded.attachments,
+    source_url=excluded.source_url,source_verified=true,ingested_at=clock_timestamp();
+  get diagnostics v_rows = row_count;
+  insert into public.cak_idx_payload_manifest
+    (provider,endpoint_key,target_date,payload_hash,source_url,rows_received,
+     rows_accepted,validation_state,producer_version)
+  values ('BLOCK_IDX','financial_report',p_observed_on,
+    encode(extensions.digest(convert_to(v_payload::text,'UTF8'),'sha256'),'hex'),v_url,
+    coalesce((v_payload->>'ResultCount')::integer,jsonb_array_length(v_payload->'Results')),
+    v_rows,case when v_rows>0 then 'VALID' else 'NO_DATA' end,'EMIR_BLOCK_IDX_DB_ONLY_V3')
+  on conflict (provider,endpoint_key,target_date,payload_hash) do update set
+    rows_received=excluded.rows_received,rows_accepted=excluded.rows_accepted,
+    validation_state=excluded.validation_state,producer_version=excluded.producer_version,
+    fetched_at=clock_timestamp();
+  return jsonb_build_object('state',case when v_rows>0 then 'VALID' else 'NO_DATA' end,
+    'year',p_year,'period',v_period,'rows',v_rows);
+end;
+$$;
+
+create or replace function public.cak_refresh_idx_ranking_v2(
+  p_as_of date default ((now() at time zone 'Asia/Jakarta')::date)
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_eod date;
+  v_rows integer;
+  v_eligible integer;
+  v_top3 integer;
+begin
+  select max(trade_date) into v_eod
+  from public.cak_idx_market_daily
+  where trade_date<=p_as_of and source_verified;
+  if v_eod is null then
+    raise exception 'EMIR Block IDX market source not ready for %',p_as_of;
+  end if;
+  delete from public.cak_idx_rank_daily where rank_date=v_eod;
+  delete from public.cak_idx_top3_execution where rank_date=v_eod;
+
+  with sessions as (
+    select trade_date,row_number() over(order by trade_date desc) rn
+    from (select distinct trade_date from public.cak_idx_market_daily
+          where trade_date<=v_eod and source_verified order by trade_date desc limit 130) s
+  ), bars as (
+    select m.*,s.rn
+    from public.cak_idx_market_daily m join sessions s using(trade_date)
+    where m.source_verified and m.close>0
+  ), agg as (
+    select ticker,count(*)::int observations,
+      (array_agg(close order by trade_date desc))[1] close,
+      (array_agg(close order by trade_date desc))[6] close_5,
+      (array_agg(close order by trade_date desc))[21] close_20,
+      (array_agg(close order by trade_date desc))[61] close_60,
+      avg(close) filter(where rn<=20) ma20,
+      avg(close) filter(where rn<=50) ma50,
+      avg(close) filter(where rn<=100) ma100,
+      max(high) filter(where rn between 2 and 21) resistance20,
+      max(high) filter(where rn between 2 and 61) resistance60,
+      min(low) filter(where rn between 2 and 11) support10,
+      avg(greatest(high-low,abs(high-previous),abs(low-previous))) filter(where rn<=14) atr14,
+      sum(foreign_net) filter(where rn<=20) foreign_net20,
+      count(*) filter(where rn<=20 and foreign_net>0)::int foreign_positive20,
+      avg(traded_value) filter(where rn<=20) adtv20,
+      avg(frequency) filter(where rn<=20) freq20,
+      avg(case when listed_shares>0 then volume/listed_shares end) filter(where rn<=20) turnover20,
+      avg(volume) filter(where rn<=20 and close>=previous) /
+        nullif(avg(volume) filter(where rn<=20 and close<previous),0) up_down_volume_ratio,
+      (array_agg(bid order by trade_date desc))[1] bid,
+      (array_agg(offer order by trade_date desc))[1] offer
+    from bars group by ticker
+  ), measures as (
+    select a.*,
+      100*(close/nullif(close_5,0)-1) ret5,
+      100*(close/nullif(close_20,0)-1) ret20,
+      100*(close/nullif(close_60,0)-1) ret60,
+      case when close>0 and offer>0 and bid>0 and offer>=bid then 100*(offer-bid)/close end spread,
+      close>resistance20 bos20,
+      close>ma20+2*atr14 overextended,
+      case when atr14>0 then greatest(support10*0.99,close-1.2*atr14) end sl,
+      case when atr14>0 then greatest(resistance60*1.01,close+2.2*atr14) end tp1,
+      case when atr14>0 then greatest(resistance60*1.01,close+3.5*atr14) end tp2
+    from agg a
+  ), cross_ranked as (
+    select m.*,
+      100*percent_rank() over(order by coalesce(foreign_net20,-1)) foreign_rank,
+      100*percent_rank() over(order by foreign_positive20) persistence_rank,
+      100*percent_rank() over(order by coalesce(up_down_volume_ratio,0)) absorption_rank,
+      100*percent_rank() over(order by ln(1+greatest(coalesce(adtv20,0),0))) value_rank,
+      100*percent_rank() over(order by coalesce(freq20,0)) frequency_rank,
+      100*percent_rank() over(order by coalesce(ret20,-999)) ret20_rank,
+      100*percent_rank() over(order by coalesce(ret60,-999)) ret60_rank
+    from measures m where observations>=20
+  ), latest_f as (
+    select distinct on(ticker) * from public.cak_idx_fundamental_snapshot
+    where source_verified and observed_on<=v_eod
+    order by ticker,period_end desc,observed_on desc
+  ), event_state as (
+    select c.ticker,
+      exists(select 1 from public.cak_idx_events e
+        where e.ticker=c.ticker and e.event_type='SUSPEND' and e.event_date<=v_eod
+          and not exists(select 1 from public.cak_idx_events u
+            where u.ticker=e.ticker and u.event_type='UNSUSPEND'
+              and u.event_date>=e.event_date and u.event_date<=v_eod)) active_suspension,
+      exists(select 1 from public.cak_idx_events e where e.ticker=c.ticker
+        and e.event_type='UMA' and e.event_date between v_eod-14 and v_eod) recent_uma,
+      exists(select 1 from public.cak_idx_events e where e.ticker=c.ticker
+        and e.event_family='ISSUED_HISTORY'
+        and e.event_type in ('HMETD','TANPA_HMETD','PRIVATE_PLACEMENT','RIGHTS_ISSUE','WARAN')
+        and e.event_date between v_eod-45 and v_eod) recent_dilution
+    from cross_ranked c
+  ), ihsg as (
+    select (array_agg(close order by trade_date desc))[1] current_close,
+      (array_agg(close order by trade_date desc))[21] prior20
+    from public.cak_idx_index_daily
+    where index_code='COMPOSITE' and trade_date<=v_eod and source_verified
+  ), components as (
+    select c.*,f.coverage_pct,
+      least(100,greatest(0,50+0.7*coalesce(f.revenue_growth_yoy_pct,0)+
+        0.3*coalesce(f.earnings_growth_yoy_pct,0))) growth_score,
+      least(100,greatest(0,0.45*least(100,greatest(0,coalesce(f.roe_pct,0)*4))+
+        0.25*least(100,greatest(0,coalesce(f.roa_pct,0)*7))+
+        0.30*least(100,greatest(0,coalesce(f.net_margin_pct,0)*4)))) profitability_score,
+      case when f.debt_to_equity is null then 40 when f.debt_to_equity<=0.5 then 100
+        when f.debt_to_equity<=1 then 75 when f.debt_to_equity<=2 then 40 else 10 end * 0.65 +
+      case when f.current_ratio>=1.5 then 100 when f.current_ratio>=1 then 65
+        when f.current_ratio is null then 40 else 20 end * 0.20 +
+      case when f.cash_to_debt_ratio>=1 then 100 when f.cash_to_debt_ratio>=0.5 then 70
+        when f.cash_to_debt_ratio is null then 40 else 25 end * 0.15 balance_score,
+      case when f.ocf>0 and f.net_income>0 and f.ocf>=f.net_income then 100
+        when f.ocf>0 then 70 else 10 end * 0.60 +
+      case when f.fcf>0 then 100 when f.fcf is null then 40 else 10 end * 0.40 cashflow_score,
+      least(100,greatest(0,0.40*foreign_rank+0.25*persistence_rank+
+        0.20*absorption_rank+0.15*least(100,greatest(0,50+5000*coalesce(turnover20,0))))) smart_score,
+      least(100,greatest(0,25*(close>ma20)::int+25*(ma20>ma50)::int+
+        15*(ma50>coalesce(ma100,ma50-1))::int+20*bos20::int+
+        15*least(1,greatest(0,1-abs(close-ma20)/nullif(2*atr14,0))))) structure_score,
+      least(100,greatest(0,0.50*ret20_rank+0.30*ret60_rank+
+        20*least(1,greatest(0,1-abs(coalesce(ret5,0)-3)/12)))) momentum_score,
+      least(100,greatest(0,0.65*value_rank+0.25*frequency_rank+
+        0.10*least(1,observations/100.0)*100)) liquidity_score,
+      case when i.current_close>i.prior20 then 75 when i.current_close is null or i.prior20 is null then 45 else 25 end regime_score,
+      least(100,greatest(0,100-40*e.active_suspension::int-15*e.recent_uma::int-
+        20*e.recent_dilution::int-10*greatest(coalesce(c.spread,0)-1,0))) risk_score,
+      e.active_suspension,e.recent_uma,e.recent_dilution
+    from cross_ranked c left join latest_f f using(ticker)
+    left join event_state e using(ticker) cross join ihsg i
+  ), scored0 as (
+    select x.*,
+      0.30*growth_score+0.25*profitability_score+0.20*balance_score+0.25*cashflow_score fundamental_score,
+      case when sl>0 and tp1>close and close>sl then (tp1-close)/(close-sl) end rr1,
+      100*(
+        (coverage_pct is not null)::int+(observations>=80)::int+(adtv20 is not null)::int+
+        (foreign_net20 is not null)::int+(spread is not null)::int
+      )/5.0 data_completeness
+    from components x
+  ), scored as (
+    select s.*,
+      0.30*fundamental_score+0.25*smart_score+0.20*structure_score+
+        0.10*momentum_score+0.10*liquidity_score+0.05*risk_score emir_score,
+      0.25*fundamental_score+0.30*smart_score+0.25*structure_score+
+        0.10*liquidity_score+0.10*risk_score execution_score,
+      observations>=80 and adtv20>=1000000000 and close>ma20 and ma20>ma50
+        and foreign_positive20>=10 and foreign_net20>0 and not overextended
+        and not active_suspension and not recent_dilution and coalesce(spread,99)<=2
+        and coalesce(coverage_pct,0)>=50 and fundamental_score>=50
+        and sl>0 and tp1>close as base_eligible
+    from scored0 s
+  ), ranked as (
+    select s.*,row_number() over(order by emir_score desc,ticker)::int overall_rank,
+      case when base_eligible and rr1>=1.8 and execution_score>=65
+        then row_number() over(partition by (base_eligible and rr1>=1.8 and execution_score>=65)
+          order by execution_score desc,emir_score desc,ticker)::int end execution_rank
+    from scored s
+  )
+  insert into public.cak_idx_rank_daily(
+    rank_date,ticker,overall_rank,execution_rank,emir_score,execution_score,
+    fundamental_score,smart_money_score,momentum_score,liquidity_score,regime_score,risk_score,
+    observations,close,return_5d_pct,return_20d_pct,return_60d_pct,foreign_net_20d,
+    foreign_positive_days_20d,adtv_20d,frequency_20d,spread_pct,entry_price,stop_loss,
+    structural_tp1,rr_tp1,official_fundamental_coverage_pct,active_suspension,recent_uma,
+    recent_dilution,execution_eligible,blocker,feature_contract,growth_score,balance_score,
+    cashflow_score,structure_score,bos_20d,overextended,tp2,setup_state,data_completeness_pct)
+  select v_eod,ticker,overall_rank,
+    case when base_eligible and rr1>=1.8 and execution_score>=65 then execution_rank end,
+    round(emir_score::numeric,4),round(execution_score::numeric,4),
+    round(fundamental_score::numeric,4),round(smart_score::numeric,4),
+    round(momentum_score::numeric,4),round(liquidity_score::numeric,4),
+    round(regime_score::numeric,4),round(risk_score::numeric,4),observations,close,
+    round(ret5::numeric,4),round(ret20::numeric,4),round(ret60::numeric,4),foreign_net20,
+    foreign_positive20,adtv20,freq20,spread,close,sl,tp1,rr1,coverage_pct,
+    active_suspension,recent_uma,recent_dilution,
+    base_eligible and rr1>=1.8 and execution_score>=65,
+    case when observations<80 then 'INSUFFICIENT_6M_HISTORY'
+      when adtv20<1000000000 then 'LIQUIDITY_BELOW_1B'
+      when active_suspension then 'ACTIVE_SUSPENSION'
+      when recent_dilution then 'RECENT_DILUTION'
+      when coalesce(coverage_pct,0)<50 then 'OFFICIAL_FUNDAMENTAL_COVERAGE'
+      when fundamental_score<50 then 'FUNDAMENTAL_SCORE_BELOW_50'
+      when not(close>ma20 and ma20>ma50) then 'NO_BULLISH_HTF_STACK'
+      when not(foreign_positive20>=10 and foreign_net20>0) then 'NO_SILENT_ACCUMULATION'
+      when overextended then 'OVEREXTENDED_ABOVE_VALUE'
+      when coalesce(spread,99)>2 then 'SPREAD_TOO_WIDE'
+      when sl is null or tp1 is null or not(sl<close and tp1>close) then 'INVALID_STRUCTURAL_GEOMETRY'
+      when coalesce(rr1,0)<1.8 then 'RR_BELOW_1_8'
+      when execution_score<65 then 'EXECUTION_SCORE_BELOW_65' else null end,
+    'EMIR_BLOCK_IDX_FEATURE_V2',round(growth_score::numeric,4),round(balance_score::numeric,4),
+    round(cashflow_score::numeric,4),round(structure_score::numeric,4),coalesce(bos20,false),
+    coalesce(overextended,false),tp2,
+    case when coalesce(bos20,false) then 'BOS_ATR_EXPANSION' else 'TREND_PULLBACK_TO_VALUE' end,
+    data_completeness
+  from ranked;
+
+  insert into public.cak_idx_top3_execution(
+    rank_date,execution_rank,ticker,execution_score,emir_score,entry_price,stop_loss,tp1,tp2,
+    rr_tp1,risk_per_share,geometry_state,decision_state,source_state,feature_contract)
+  select v_eod,row_number() over(order by r.execution_score desc,r.emir_score desc,r.ticker)::int,
+    r.ticker,r.execution_score,r.emir_score,r.entry_price,r.stop_loss,r.structural_tp1,r.tp2,
+    r.rr_tp1,r.entry_price-r.stop_loss,
+    case when r.bos_20d then 'BOS_STRUCTURAL_ATR_EXPANSION' else 'TREND_PULLBACK_STRUCTURAL_ATR' end,
+    'EXECUTION_READY','VERIFIED_OFFICIAL_BLOCK_IDX_DATABASE_ONLY','EMIR_BLOCK_IDX_FEATURE_V2'
+  from public.cak_idx_rank_daily r
+  where r.rank_date=v_eod and r.execution_eligible
+  order by r.execution_score desc,r.emir_score desc,r.ticker limit 3;
+
+  select count(*) into v_rows from public.cak_idx_rank_daily where rank_date=v_eod;
+  select count(*) into v_eligible from public.cak_idx_rank_daily where rank_date=v_eod and execution_eligible;
+  select count(*) into v_top3 from public.cak_idx_top3_execution where rank_date=v_eod;
+  return jsonb_build_object('status',case when v_top3=3 then 'READY' else 'INSUFFICIENT_EXECUTION_READY' end,
+    'rank_date',v_eod,'ranked',v_rows,'execution_eligible',v_eligible,'top3',v_top3,
+    'feature_contract','EMIR_BLOCK_IDX_FEATURE_V2','scanner_data_mode','DATABASE_ONLY');
+end;
+$$;
+
+create or replace function public.cak_idx_run_eod_v3(
+  p_trade_date date default ((now() at time zone 'Asia/Jakarta')::date)
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  v_run_key text := 'EMIR_BLOCK_IDX_DB_EOD_V3:'||p_trade_date::text;
+  v_market jsonb;
+  v_events jsonb;
+  v_announcements jsonb;
+  v_reference jsonb := jsonb_build_object('state','NOT_RUN');
+  v_rank jsonb;
+  v_storage jsonb;
+begin
+  insert into public.cak_idx_ingestion_runs(run_key,mode,requested_from,requested_to,status,producer_version)
+  values(v_run_key,'daily',p_trade_date,p_trade_date,'RUNNING','EMIR_BLOCK_IDX_DB_ONLY_V3')
+  on conflict(run_key) do update set status='RUNNING',started_at=clock_timestamp(),completed_at=null;
+  v_storage:=public.cak_prune_storage_v1(p_trade_date);
+  if v_storage->>'state'='HARD_STOP' then raise exception 'storage hard-stop before EOD'; end if;
+  v_market:=public.cak_idx_ingest_official_market_day_v2(p_trade_date);
+  v_events:=public.cak_idx_ingest_official_events_v2(p_trade_date-14,p_trade_date);
+  v_announcements:=public.cak_idx_ingest_announcements_all_v2(p_trade_date-14,p_trade_date);
+  begin
+    v_reference:=public.cak_idx_refresh_reference_v3(p_trade_date);
+  exception when others then
+    v_reference:=jsonb_build_object('state','FAILED_NON_BLOCKING','sqlstate',sqlstate,'error',left(sqlerrm,500));
+  end;
+  if v_market->>'state'='VALID' then v_rank:=public.cak_refresh_idx_ranking_v2(p_trade_date); end if;
+  v_storage:=public.cak_prune_storage_v1(p_trade_date);
+  update public.cak_idx_ingestion_runs set
+    status=case when v_market->>'state'='VALID' then 'COMPLETED' else 'SOURCE_NOT_READY' end,
+    core_sessions_attempted=1,core_sessions_loaded=case when v_market->>'state'='VALID' then 1 else 0 end,
+    rows_persisted=coalesce((v_market->>'stock_rows')::integer,0)+
+      coalesce((v_market->>'index_rows')::integer,0)+coalesce((v_market->>'broker_rows')::integer,0)+
+      coalesce((v_events->>'event_rows')::integer,0),
+    detail=jsonb_build_object('market',v_market,'events',v_events,'announcements',v_announcements,
+      'reference',v_reference,'ranking',v_rank,'storage',v_storage),completed_at=clock_timestamp()
+  where run_key=v_run_key;
+  return jsonb_build_object('market',v_market,'events',v_events,'announcements',v_announcements,
+    'reference',v_reference,'ranking',v_rank,'storage',v_storage);
+exception when others then
+  update public.cak_idx_ingestion_runs set status='FAILED',failures=failures+1,
+    detail=jsonb_build_object('sqlstate',sqlstate,'error',left(sqlerrm,1000)),completed_at=clock_timestamp()
+  where run_key=v_run_key;
+  raise;
+end;
+$$;
+
+create or replace function public.cak_load_latest_idx_rank_v2(p_limit integer default 1000)
+returns setof public.cak_idx_rank_daily
+language sql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+  select r.* from public.cak_idx_rank_daily r
+  where r.rank_date=(select max(rank_date) from public.cak_idx_rank_daily)
+  order by r.overall_rank limit least(greatest(p_limit,1),1000)
+$$;
+
+create or replace function public.cak_idx_database_health_v2()
+returns jsonb
+language sql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+  select jsonb_build_object(
+    'state',case
+      when pg_database_size(current_database())>=492830720 then 'HARD_STOP'
+      when pg_database_size(current_database())>=440401920 then 'WARNING'
+      else 'NORMAL' end,
+    'database_bytes',pg_database_size(current_database()),'quota_bytes',524288000,
+    'latest_market_date',(select max(trade_date) from public.cak_idx_market_daily where source_verified),
+    'market_rows',(select count(*) from public.cak_idx_market_daily),
+    'market_tickers',(select count(distinct ticker) from public.cak_idx_market_daily),
+    'fundamental_tickers',(select count(distinct ticker) from public.cak_idx_fundamental_snapshot where source_verified),
+    'shareholder_tickers',(select count(distinct ticker) from public.cak_idx_shareholder_snapshot where source_verified),
+    'latest_rank_date',(select max(rank_date) from public.cak_idx_rank_daily),
+    'latest_top3_count',(select count(*) from public.cak_idx_top3_execution
+      where rank_date=(select max(rank_date) from public.cak_idx_top3_execution)),
+    'data_mode','DATABASE_ONLY','feature_contract','EMIR_BLOCK_IDX_FEATURE_V2')
+$$;
+
+-- Compact retention: detailed daily evidence for six months, current reference
+-- snapshots, latest eight filings per issuer, and short operational logs.
+create or replace function public.cak_prune_storage_v2(
+  p_as_of date default ((now() at time zone 'Asia/Jakarta')::date)
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare v_result jsonb; v_deleted bigint:=0; v_n bigint; v_cutoff date:=(p_as_of-interval '6 months')::date;
+begin
+  perform public.cak_prune_storage_v1(p_as_of);
+  delete from public.cak_idx_shareholder_snapshot s where exists(
+    select 1 from (select ticker,observed_on,row_number() over(partition by ticker order by observed_on desc) rn
+      from (select distinct ticker,observed_on from public.cak_idx_shareholder_snapshot) d) x
+    where x.ticker=s.ticker and x.observed_on=s.observed_on and x.rn>2);
+  get diagnostics v_n=row_count; v_deleted:=v_deleted+v_n;
+  delete from public.cak_idx_financial_filing_catalog f where exists(
+    select 1 from (select ticker,report_year,report_period,file_modified_at,payload_hash,
+      row_number() over(partition by ticker order by period_end desc,file_modified_at desc) rn
+      from public.cak_idx_financial_filing_catalog) x
+    where x.ticker=f.ticker and x.report_year=f.report_year and x.report_period=f.report_period
+      and x.file_modified_at=f.file_modified_at and x.payload_hash=f.payload_hash and x.rn>8);
+  get diagnostics v_n=row_count; v_deleted:=v_deleted+v_n;
+  delete from cron.job_run_details where end_time<now()-interval '14 days';
+  get diagnostics v_n=row_count; v_deleted:=v_deleted+v_n;
+  select public.cak_capture_storage_v1() into v_result;
+  return v_result||jsonb_build_object('additional_deleted_rows',v_deleted,'market_cutoff',v_cutoff);
+end;
+$$;
+
+do $$ declare r record; begin
+  for r in select jobid from cron.job where jobname in (
+    'emir-block-idx-eod-1745-wib','emir-block-idx-eod-retry-1845-wib',
+    'emir-block-idx-shareholders-1915-wib','emir-block-idx-financial-catalog-1930-wib',
+    'emir-block-idx-storage-1945-wib') loop perform cron.unschedule(r.jobid); end loop;
+  perform cron.schedule('emir-block-idx-eod-1745-wib','45 10 * * 1-5',
+    $cron$select public.cak_idx_run_eod_v3(((now() at time zone 'Asia/Jakarta')::date));$cron$);
+  perform cron.schedule('emir-block-idx-eod-retry-1845-wib','45 11 * * 1-5',
+    $cron$select public.cak_idx_run_eod_v3(((now() at time zone 'Asia/Jakarta')::date));$cron$);
+  perform cron.schedule('emir-block-idx-shareholders-1915-wib','15 12 * * 1-5',
+    $cron$select public.cak_idx_refresh_shareholders_v3(((extract(doy from (now() at time zone 'Asia/Jakarta'))::int*100)%1000),100,((now() at time zone 'Asia/Jakarta')::date));$cron$);
+  perform cron.schedule('emir-block-idx-financial-catalog-1930-wib','30 12 * * 1-5',
+    $cron$select public.cak_idx_refresh_financial_catalog_v3(extract(year from (now() at time zone 'Asia/Jakarta'))::int,case when extract(month from (now() at time zone 'Asia/Jakarta'))<=3 then 'AUDIT' when extract(month from (now() at time zone 'Asia/Jakarta'))<=6 then 'TW1' when extract(month from (now() at time zone 'Asia/Jakarta'))<=9 then 'TW2' else 'TW3' end,((now() at time zone 'Asia/Jakarta')::date));$cron$);
+  perform cron.schedule('emir-block-idx-storage-1945-wib','45 12 * * 1-5',
+    $cron$select public.cak_prune_storage_v2(((now() at time zone 'Asia/Jakarta')::date));$cron$);
+end $$;
+
+revoke all on function public.cak_idx_refresh_reference_v3(date) from public,anon,authenticated;
+revoke all on function public.cak_idx_refresh_shareholders_v3(integer,integer,date) from public,anon,authenticated;
+revoke all on function public.cak_idx_refresh_financial_catalog_v3(integer,text,date) from public,anon,authenticated;
+revoke all on function public.cak_refresh_idx_ranking_v2(date) from public,anon,authenticated;
+revoke all on function public.cak_idx_run_eod_v3(date) from public,anon,authenticated;
+revoke all on function public.cak_load_latest_idx_rank_v2(integer) from public,anon,authenticated;
+revoke all on function public.cak_idx_database_health_v2() from public,anon,authenticated;
+revoke all on function public.cak_prune_storage_v2(date) from public,anon,authenticated;
+grant execute on function public.cak_idx_refresh_reference_v3(date) to service_role;
+grant execute on function public.cak_idx_refresh_shareholders_v3(integer,integer,date) to service_role;
+grant execute on function public.cak_idx_refresh_financial_catalog_v3(integer,text,date) to service_role;
+grant execute on function public.cak_refresh_idx_ranking_v2(date) to service_role;
+grant execute on function public.cak_idx_run_eod_v3(date) to service_role;
+grant execute on function public.cak_load_latest_idx_rank_v2(integer) to service_role;
+grant execute on function public.cak_idx_database_health_v2() to service_role;
+grant execute on function public.cak_prune_storage_v2(date) to service_role;
