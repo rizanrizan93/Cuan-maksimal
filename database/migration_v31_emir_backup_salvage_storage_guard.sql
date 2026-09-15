@@ -224,7 +224,7 @@ begin
   delete from public.cak_idx_index_daily where trade_date<v_cutoff; get diagnostics v_n=row_count; v_deleted:=v_deleted+v_n;
   delete from public.cak_idx_broker_market_daily where trade_date<v_cutoff; get diagnostics v_n=row_count; v_deleted:=v_deleted+v_n;
   delete from public.cak_idx_payload_manifest where target_date<v_cutoff; get diagnostics v_n=row_count; v_deleted:=v_deleted+v_n;
-  delete from public.cak_idx_events where event_date<(p_as_of-interval '18 months')::date; get diagnostics v_n=row_count; v_deleted:=v_deleted+v_n;
+  delete from public.cak_idx_events where event_date<v_cutoff; get diagnostics v_n=row_count; v_deleted:=v_deleted+v_n;
   delete from public.cak_idx_ingestion_failures where last_seen_at<now()-interval '90 days'; get diagnostics v_n=row_count; v_deleted:=v_deleted+v_n;
   delete from public.cak_idx_ingestion_runs where started_at<now()-interval '90 days'; get diagnostics v_n=row_count; v_deleted:=v_deleted+v_n;
   delete from public.cak_idx_rank_daily where rank_date<v_cutoff; get diagnostics v_n=row_count; v_deleted:=v_deleted+v_n;
