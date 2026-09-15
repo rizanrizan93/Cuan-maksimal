@@ -131,3 +131,17 @@ def test_storage_guard_is_enforced_by_producer_and_bounded_to_500_mib():
     assert 'sink.rpc("cak_prune_storage_v1"' in producer
     assert producer.count('sink.rpc("cak_prune_storage_v1"') == 2
     assert '"HARD_STOP"' in producer
+
+
+
+def test_server_side_eod_fallback_is_official_complete_and_private():
+    sql = Path("database/migration_v32_emir_block_idx_server_eod.sql").read_text()
+    assert "https://block.idx.id/primary/TradingSummary/GetStockSummary?length=2000" in sql
+    assert "GetIndexSummary?length=1000" in sql
+    assert "GetBrokerSummary?length=200" in sql
+    assert "MARKET_WIDE_NO_TICKER_BUY_SELL_SPLIT" in sql
+    assert "'45 10 * * 1-5'" in sql
+    assert "'45 11 * * 1-5'" in sql
+    assert "revoke all on function" in sql.lower()
+    assert "cak_idx_refresh_idx_ranking" not in sql
+    assert "cak_refresh_idx_ranking_v1" in sql
