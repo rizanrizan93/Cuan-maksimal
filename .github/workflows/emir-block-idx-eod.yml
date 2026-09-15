@@ -1,0 +1,91 @@
+name: EMIR official Block IDX EOD database
+
+on:
+  schedule:
+    # 17:30 WIB after regular-market close; 18:30 WIB is an idempotent retry.
+    - cron: "30 10,11 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Daily refresh or bounded historical backfill
+        required: true
+        default: daily
+        type: choice
+        options:
+          - daily
+          - backfill
+      from_date:
+        description: Optional YYYY-MM-DD; blank means six calendar months for backfill
+        required: false
+        type: string
+      to_date:
+        description: Optional YYYY-MM-DD; blank means current Jakarta date
+        required: false
+        type: string
+      fundamental_limit:
+        description: Official XBRL deep-review finalists (3-100)
+        required: true
+        default: "60"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: emir-block-idx-eod
+  cancel-in-progress: false
+
+env:
+  PYTHONPATH: ${{ github.workspace }}
+  PYTHONDONTWRITEBYTECODE: "1"
+  CAK_SCAN_DATABASE_ONLY: "1"
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install pinned runtime
+        run: pip install --disable-pip-version-check --no-cache-dir -r requirements.txt
+      - name: Compile producer
+        run: python -m py_compile emir_block_idx_eod.py emir_database_only.py scripts/update_emir_block_idx_evidence.py
+      - name: Validate dedicated EMIR secrets
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          python - <<'PY'
+          import os
+          url=os.environ.get("SUPABASE_URL","")
+          key=os.environ.get("SUPABASE_SECRET_KEY","")
+          assert "nredhspgvrqapycpakay.supabase.co" in url, "workflow must target dedicated EMIR v2"
+          assert key and not key.startswith(("eyJ","sb_publishable_")), "backend sb_secret key required"
+          PY
+      - name: Load completed official IDX evidence
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mode="${{ github.event.inputs.mode || 'daily' }}"
+          args=(--mode "$mode" --fundamental-limit "${{ github.event.inputs.fundamental_limit || '60' }}")
+          if [ -n "${{ github.event.inputs.from_date || '' }}" ]; then args+=(--from-date "${{ github.event.inputs.from_date }}"); fi
+          if [ -n "${{ github.event.inputs.to_date || '' }}" ]; then args+=(--to-date "${{ github.event.inputs.to_date }}"); fi
+          python scripts/update_emir_block_idx_evidence.py "${args[@]}"
+      - name: Emit database-first contract
+        if: always()
+        run: |
+          {
+            echo "### EMIR Block IDX EOD"
+            echo "- Primary APIs: official block.idx.id; XBRL bytes: official IDX static hosts"
+            echo "- Scanner mode: database only"
+            echo "- Scheduled: 17:30 WIB plus idempotent 18:30 WIB retry"
+            echo "- Historical default: six calendar months"
+            echo "- Storage: 500 MiB quota; prune at each run; hard-stop at 470 MiB"
+            echo "- Ranking contract: EMIR_BLOCK_IDX_FEATURE_V1"
+          } >> "$GITHUB_STEP_SUMMARY"

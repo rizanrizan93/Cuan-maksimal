@@ -1020,3 +1020,189 @@ __all__ = [
     "load_cached_ohlcv_frames", "load_cached_ksei", "load_cached_fundamentals", "load_cached_idx_official_fundamentals", "load_cached_news",
     "persist_verify_cache_bundle", "cache_commit_succeeded", "cache_persistence_state", "cache_summary", "trim_period",
 ]
+
+
+# Strict database-only scanner mode. The scheduled EOD producer owns all network
+# acquisition; these wrappers ensure interactive scans never silently go online.
+_network_fetch_ohlcv_cache_first = fetch_ohlcv_cache_first
+_network_fetch_news_cache_first = fetch_news_cache_first
+_network_fetch_ksei_cache_first = fetch_ksei_cache_first
+_network_fetch_fundamental_cache_first = fetch_fundamental_cache_first
+_network_fetch_idx_official_fundamental_cache_first = fetch_idx_official_fundamental_cache_first
+
+
+def _strict_database_only() -> bool:
+    import os
+    return str(os.getenv("CAK_SCAN_DATABASE_ONLY", "0")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def fetch_ohlcv_cache_first(
+    config: DatabaseConfig,
+    tickers: Iterable[str],
+    *,
+    period: str = "5y",
+    max_workers: int = 4,
+    completed_only: bool = True,
+    now: Any = None,
+    force_refresh: bool = False,
+    cache_ttl_hours: float = OHLCV_CACHE_TTL_HOURS,
+    last_scan_id: str = "",
+) -> tuple[dict[str, pd.DataFrame], pd.DataFrame, list[dict[str, Any]]]:
+    if not _strict_database_only():
+        return _network_fetch_ohlcv_cache_first(
+            config, tickers, period=period, max_workers=max_workers,
+            completed_only=completed_only, now=now, force_refresh=force_refresh,
+            cache_ttl_hours=cache_ttl_hours, last_scan_id=last_scan_id,
+        )
+    frames, audit = load_cached_ohlcv_frames(
+        config, tickers, period=period, now=now, completed_only=completed_only
+    )
+    if not audit.empty:
+        audit = audit.copy()
+        base_detail = audit["detail"].astype(str) if "detail" in audit.columns else pd.Series("", index=audit.index, dtype=str)
+        audit["detail"] = base_detail + " Interactive provider calls disabled by CAK_SCAN_DATABASE_ONLY."
+    return frames, audit, []
+
+
+def fetch_news_cache_first(
+    config: DatabaseConfig,
+    universe: pd.DataFrame,
+    *,
+    limit: int = 8,
+    max_workers: int = 4,
+    use_yahoo: bool = True,
+    use_google: bool = True,
+    now: Any = None,
+    force_refresh: bool = False,
+    last_scan_id: str = "",
+) -> tuple[pd.DataFrame, pd.DataFrame, list[dict[str, Any]]]:
+    if not _strict_database_only():
+        return _network_fetch_news_cache_first(
+            config, universe, limit=limit, max_workers=max_workers,
+            use_yahoo=use_yahoo, use_google=use_google, now=now,
+            force_refresh=force_refresh, last_scan_id=last_scan_id,
+        )
+    events, audit = load_cached_news(config, universe.get("ticker", pd.Series(dtype=str)).tolist())
+    return events, audit, []
+
+
+def fetch_ksei_cache_first(
+    config: DatabaseConfig,
+    tickers: Iterable[str],
+    *,
+    max_workers: int = 4,
+    now: Any = None,
+    force_refresh: bool = False,
+    last_scan_id: str = "",
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, list[dict[str, Any]]]:
+    if not _strict_database_only():
+        return _network_fetch_ksei_cache_first(
+            config, tickers, max_workers=max_workers, now=now,
+            force_refresh=force_refresh, last_scan_id=last_scan_id,
+        )
+    profiles, actions, audit = load_cached_ksei(config, tickers)
+    return profiles, actions, audit, []
+
+
+def fetch_fundamental_cache_first(
+    config: DatabaseConfig,
+    tickers: Iterable[str],
+    *,
+    max_workers: int = 3,
+    now: Any = None,
+    force_refresh: bool = False,
+    last_scan_id: str = "",
+) -> tuple[pd.DataFrame, pd.DataFrame, list[dict[str, Any]]]:
+    if not _strict_database_only():
+        return _network_fetch_fundamental_cache_first(
+            config, tickers, max_workers=max_workers, now=now,
+            force_refresh=force_refresh, last_scan_id=last_scan_id,
+        )
+    snapshots, audit = load_cached_fundamentals(config, tickers)
+    return snapshots, audit, []
+
+
+def fetch_idx_official_fundamental_cache_first(
+    config: DatabaseConfig,
+    tickers: Iterable[str],
+    *,
+    max_workers: int = 2,
+    now: Any = None,
+    force_refresh: bool = False,
+    last_scan_id: str = "",
+) -> tuple[pd.DataFrame, pd.DataFrame, list[dict[str, Any]]]:
+    if not _strict_database_only():
+        return _network_fetch_idx_official_fundamental_cache_first(
+            config, tickers, max_workers=max_workers, now=now,
+            force_refresh=force_refresh, last_scan_id=last_scan_id,
+        )
+    snapshots, audit = load_cached_idx_official_fundamentals(config, tickers)
+    return snapshots, audit, []
+
+
+_legacy_load_cached_ohlcv_frames = load_cached_ohlcv_frames
+
+
+def load_cached_ohlcv_frames(
+    config: DatabaseConfig,
+    tickers: Iterable[str],
+    *,
+    period: str = "5y",
+    now: Any = None,
+    completed_only: bool = True,
+) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
+    if not _strict_database_only():
+        return _legacy_load_cached_ohlcv_frames(
+            config, tickers, period=period, now=now, completed_only=completed_only
+        )
+    from emir_database_only import load_benchmark_frame, load_market_panel
+
+    symbols = list(dict.fromkeys(normalize_ticker(t) for t in tickers if normalize_ticker(t)))
+    frames: dict[str, pd.DataFrame] = {}
+    audits: list[dict[str, Any]] = []
+    equity_symbols = [symbol for symbol in symbols if not symbol.startswith("^")]
+    try:
+        panel = load_market_panel(
+            config,
+            [symbol.replace(".JK", "") for symbol in equity_symbols],
+            sessions=130,
+        )
+    except Exception as exc:
+        panel = pd.DataFrame()
+        panel_error = f"{type(exc).__name__}: {exc}"
+    else:
+        panel_error = ""
+
+    for symbol in equity_symbols:
+        plain = symbol.replace(".JK", "")
+        local = panel[panel.get("ticker", pd.Series(dtype=str)).astype(str).eq(plain)].copy() if not panel.empty else pd.DataFrame()
+        if local.empty:
+            audits.append(_audit_row(symbol, "EMIR_BLOCK_IDX_DATABASE", "CACHE_MISS_NO_PROVIDER_CALL", pd.DataFrame(), panel_error or "No official market rows."))
+            continue
+        local = local.rename(columns={
+            "trade_date": "Date", "open": "Open", "high": "High",
+            "low": "Low", "close": "Close", "volume": "Volume",
+        })
+        frame = _sanitize_ohlcv(local.set_index("Date"))
+        if len(frame) < 80:
+            audits.append(_audit_row(symbol, "EMIR_BLOCK_IDX_DATABASE", "CACHE_MISS_NO_PROVIDER_CALL", frame, f"Only {len(frame)} official sessions; 80 required."))
+            continue
+        frames[symbol] = completed_session_frame(frame, now=now, completed_only=completed_only)
+        audits.append(_audit_row(symbol, "EMIR_BLOCK_IDX_DATABASE", "CACHE_HIT", frames[symbol], "Official normalized Block IDX panel; no provider call."))
+
+    for symbol in [item for item in symbols if item.startswith("^")]:
+        benchmark = load_benchmark_frame(config, sessions=130)
+        if benchmark.empty:
+            audits.append(_audit_row(symbol, "EMIR_BLOCK_IDX_DATABASE", "CACHE_MISS_NO_PROVIDER_CALL", pd.DataFrame(), "Official COMPOSITE index unavailable."))
+            continue
+        benchmark = benchmark.rename(columns={
+            "trade_date": "Date", "open": "Open", "high": "High",
+            "low": "Low", "close": "Close", "volume": "Volume",
+        })
+        frame = _sanitize_ohlcv(benchmark.set_index("Date"))
+        if len(frame) >= 20:
+            frames[symbol] = completed_session_frame(frame, now=now, completed_only=completed_only)
+            audits.append(_audit_row(symbol, "EMIR_BLOCK_IDX_DATABASE", "CACHE_HIT", frames[symbol], "Official COMPOSITE index; no provider call."))
+        else:
+            audits.append(_audit_row(symbol, "EMIR_BLOCK_IDX_DATABASE", "CACHE_MISS_NO_PROVIDER_CALL", frame, "Insufficient official index history."))
+    return frames, pd.DataFrame(audits)
