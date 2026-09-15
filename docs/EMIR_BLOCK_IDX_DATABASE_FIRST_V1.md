@@ -47,7 +47,7 @@ to_date: 2026-09-15
 fundamental_limit: 60
 ```
 
-Daily workflow runs at 17:30 WIB and repeats idempotently at 18:30 WIB to tolerate delayed publication.
+Daily workflow runs at 17:30 WIB and repeats idempotently at 18:30 WIB to tolerate delayed publication. The database also owns a private core-market fallback at 17:45 and 18:45 WIB via pg_cron; it loads the same three verified bulk endpoints, reruns ranking, and prunes storage without exposing an HTTP webhook.
 
 ## Ranking
 
@@ -94,10 +94,11 @@ The supplied legacy gzip was valid as a compressed stream but its logical SQL en
 
 1. Apply `database/migration_v30_emir_block_idx_database_first.sql`.
 2. Apply `database/migration_v31_emir_backup_salvage_storage_guard.sql`.
-3. Run `database/verify_v30_emir_block_idx_database_first.sql`.
-4. Point GitHub secrets `SUPABASE_URL` and `SUPABASE_SECRET_KEY` to project `nredhspgvrqapycpakay`.
-5. Dispatch the EOD workflow once in backfill mode with the exact dates above.
-6. Verify session coverage, endpoint manifests, storage state, rank count, zero guardrail bypasses, and Top‑3.
-7. Merge/deploy the application with `CAK_SCAN_DATABASE_ONLY=1`.
+3. Apply `database/migration_v32_emir_block_idx_server_eod.sql`.
+4. Run `database/verify_v30_emir_block_idx_database_first.sql`.
+5. Point GitHub secrets `SUPABASE_URL` and `SUPABASE_SECRET_KEY` to project `nredhspgvrqapycpakay`.
+6. Dispatch the EOD workflow once in backfill mode with the exact dates above.
+7. Verify session coverage, endpoint manifests, storage state, rank count, zero guardrail bypasses, and Top‑3.
+8. Merge/deploy the application with `CAK_SCAN_DATABASE_ONLY=1`.
 
 The target project is active and its compact legacy salvage is validated. A completed six-month official Block IDX backfill is still a distinct operational checkpoint and must be verified from ingestion manifests before it is claimed complete.
