@@ -159,3 +159,15 @@ def test_announcement_items_container_is_normalized():
     assert rows[0]["ticker"] == "TEST"
     assert rows[0]["source_ref"] == "A/1"
     assert rows[0]["source_verified"] is True
+
+
+
+def test_announcement_backfill_uses_real_page_number_contract():
+    producer = Path("emir_block_idx_eod.py").read_text()
+    migration = Path("database/migration_v33_emir_block_idx_events_eod.sql").read_text()
+    assert '"pageNumber": page' in producer
+    assert '"pageSize": 1000' in producer
+    assert 'payload.get("PageCount")' in producer
+    assert "pageNumber='||p_page::text" in migration
+    assert "cak_idx_ingest_announcements_all_v2" in migration
+    assert "indexFrom=0&pageSize=5000" not in producer
