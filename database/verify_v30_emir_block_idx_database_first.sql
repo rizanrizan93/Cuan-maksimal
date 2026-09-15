@@ -44,3 +44,24 @@ from information_schema.role_table_grants
 where table_schema='public' and table_name like 'cak_idx_%'
   and grantee in ('anon','authenticated')
 order by table_name,grantee,privilege_type;
+
+
+-- v31/v32 storage, scheduler and salvage acceptance.
+select public.cak_capture_storage_v1() as storage_state;
+
+select backup_name,backup_sha256,logical_dump_complete,salvage_policy,
+       imported_rows,validation_state,imported_at
+from public.cak_backup_salvage_manifest;
+
+select jobname,schedule,active,command
+from cron.job
+where jobname in ('emir-block-idx-eod-1745-wib','emir-block-idx-eod-retry-1845-wib')
+order by jobname;
+
+select count(*) filter(where trade_date < ((now() at time zone 'Asia/Jakarta')::date-interval '6 months')::date)
+         as market_rows_outside_retention,
+       count(*) filter(where source_url not like 'https://block.idx.id/%')
+         as market_rows_nonofficial_url,
+       count(*) filter(where not source_verified)
+         as market_rows_unverified
+from public.cak_idx_market_daily;
