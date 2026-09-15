@@ -145,3 +145,17 @@ def test_server_side_eod_fallback_is_official_complete_and_private():
     assert "revoke all on function" in sql.lower()
     assert "cak_idx_refresh_idx_ranking" not in sql
     assert "cak_refresh_idx_ranking_v1" in sql
+
+
+
+def test_announcement_items_container_is_normalized():
+    payload = {"Items": [{
+        "Id": "official-1", "AnnouncementNo": "A/1",
+        "PublishDate": "2026-09-15T05:40:04", "Code": "TEST",
+        "Title": "Keterbukaan informasi", "Attachments": [{"FullSavePath": "https://www.idx.co.id/a.pdf"}],
+    }]}
+    rows = generic_events(payload, "ANNOUNCEMENT", "https://block.idx.id/official", date(2026, 9, 15))
+    assert len(rows) == 1
+    assert rows[0]["ticker"] == "TEST"
+    assert rows[0]["source_ref"] == "A/1"
+    assert rows[0]["source_verified"] is True
