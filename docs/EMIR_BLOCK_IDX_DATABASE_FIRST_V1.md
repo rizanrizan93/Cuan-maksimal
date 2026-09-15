@@ -60,9 +60,9 @@ Daily workflow runs at 17:30 WIB and repeats idempotently at 18:30 WIB to tolera
 | Momentum/structure | 20% | 5D/20D/60D return, close–MA20–MA60 stack, prior 60-session resistance |
 | Liquidity | 10% | ADTV20, frequency, observation completeness |
 | Market regime | 10% | official COMPOSITE 20-session direction |
-| Risk/catalyst state | 5% | suspension, UMA, dilution and bid/offer spread |
+| Risk/catalyst state | 5% | suspension, UMA, dilution, bid/offer spread, public float and controller concentration |
 
-BrokerSummary is market-wide only. It is persisted for market/member diagnostics and never treated as stock-level broker accumulation or bandar identity.
+BrokerSummary is market-wide only. It is persisted for market/member diagnostics and never treated as stock-level broker accumulation or bandar identity. Official `CompanyProfilesDetail` ownership is refreshed for the Top‑60 finalists; public float below 7.5% and controller concentration above 85% receive a bounded risk penalty. `GetProfileAnnouncement` and `GetTradingInfoSS` are verified but not duplicated because their scanner-useful facts are already present in the complete announcement and StockSummary planes.
 
 ## Execution Top 3
 
@@ -96,10 +96,12 @@ The supplied legacy gzip was valid as a compressed stream but its logical SQL en
 2. Apply `database/migration_v31_emir_backup_salvage_storage_guard.sql`.
 3. Apply `database/migration_v32_emir_block_idx_server_eod.sql`.
 4. Apply `database/migration_v33_emir_block_idx_events_eod.sql`.
-5. Run `database/verify_v30_emir_block_idx_database_first.sql`.
-6. Point GitHub secrets `SUPABASE_URL` and `SUPABASE_SECRET_KEY` to project `nredhspgvrqapycpakay`.
-7. Dispatch the EOD workflow once in backfill mode with the exact dates above.
-8. Verify session coverage, endpoint manifests, storage state, rank count, zero guardrail bypasses, and Top‑3.
-9. Merge/deploy the application with `CAK_SCAN_DATABASE_ONLY=1`.
+5. Apply `database/migration_v34_emir_company_and_eod_resilience.sql`.
+6. Apply `database/migration_v35_emir_ownership_finalists.sql`.
+7. Run `database/verify_v30_emir_block_idx_database_first.sql`.
+8. Point GitHub secrets `SUPABASE_URL` and `SUPABASE_SECRET_KEY` to project `nredhspgvrqapycpakay`.
+9. Dispatch the EOD workflow once in backfill mode with the exact dates above.
+10. Verify session coverage, endpoint manifests, storage state, rank count, zero guardrail bypasses, and Top‑3.
+11. Merge/deploy the application with `CAK_SCAN_DATABASE_ONLY=1`.
 
 The target project is active and its compact legacy salvage is validated. A completed six-month official Block IDX backfill is still a distinct operational checkpoint and must be verified from ingestion manifests before it is claimed complete.
