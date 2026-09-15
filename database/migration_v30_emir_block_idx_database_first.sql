@@ -419,9 +419,9 @@ begin
   )
   select v_eod,ticker,overall_rank,
     case when base_eligible and rr1>=1.8 then execution_rank end,
-    round(emir_score,4),round(execution_score,4),round(fundamental_score,4),round(smart_score,4),round(momentum_score,4),
-    round(liquidity_score,4),round(regime_score,4),round(risk_score,4),observations,close,
-    round(ret5,4),round(ret20,4),round(ret60,4),foreign_net20,foreign_positive20,
+    round((emir_score)::numeric,4),round((execution_score)::numeric,4),round((fundamental_score)::numeric,4),round((smart_score)::numeric,4),round((momentum_score)::numeric,4),
+    round((liquidity_score)::numeric,4),round((regime_score)::numeric,4),round((risk_score)::numeric,4),observations,close,
+    round((ret5)::numeric,4),round((ret20)::numeric,4),round((ret60)::numeric,4),foreign_net20,foreign_positive20,
     adtv20,freq20,spread,close,sl,structural_tp1,rr1,coverage_pct,active_suspension,recent_uma,recent_dilution,
     base_eligible and rr1>=1.8,
     case
