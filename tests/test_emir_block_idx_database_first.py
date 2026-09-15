@@ -171,3 +171,17 @@ def test_announcement_backfill_uses_real_page_number_contract():
     assert "pageNumber='||p_page::text" in migration
     assert "cak_idx_ingest_announcements_all_v2" in migration
     assert "indexFrom=0&pageSize=5000" not in producer
+
+
+
+def test_official_ownership_is_normalized_for_finalists_without_duplicate_endpoints():
+    ranking = Path("database/migration_v30_emir_block_idx_database_first.sql").read_text()
+    ownership = Path("database/migration_v35_emir_ownership_finalists.sql").read_text()
+    assert "cak_idx_ownership_snapshot" in ranking
+    assert "o.public_pct<7.5" in ranking
+    assert "o.controller_pct>85" in ranking
+    assert "GetCompanyProfilesDetail?emitenType=s&kodeEmiten=" in ownership
+    assert "limit greatest(3,least(p_limit,100))" in ownership
+    assert "DERIVED_FROM_COMPLETE_ALL_ANNOUNCEMENT" in ownership
+    assert "DERIVED_FROM_STOCK_SUMMARY_NO_DUPLICATE_STORAGE" in ownership
+    assert "enable row level security" in ownership.lower()
