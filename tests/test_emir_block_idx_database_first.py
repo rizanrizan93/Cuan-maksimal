@@ -185,3 +185,14 @@ def test_official_ownership_is_normalized_for_finalists_without_duplicate_endpoi
     assert "DERIVED_FROM_COMPLETE_ALL_ANNOUNCEMENT" in ownership
     assert "DERIVED_FROM_STOCK_SUMMARY_NO_DUPLICATE_STORAGE" in ownership
     assert "enable row level security" in ownership.lower()
+
+
+
+def test_noncore_eod_is_resilient_and_legacy_definer_is_closed():
+    resilience = Path("database/migration_v34_emir_company_and_eod_resilience.sql").read_text()
+    cleanup = Path("database/migration_v36_emir_security_performance_cleanup.sql").read_text()
+    assert "exception when others" in resilience.lower()
+    assert "'state','PARTIAL'" in resilience
+    assert "emir-company-reference-weekly" in resilience
+    assert "revoke all on function public.rls_auto_enable()" in cleanup.lower()
+    assert "cak_idx_payload_manifest_endpoint_idx" in cleanup
