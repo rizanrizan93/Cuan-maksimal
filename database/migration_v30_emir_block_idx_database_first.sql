@@ -350,6 +350,11 @@ begin
     from public.cak_idx_fundamental_snapshot
     where source_verified and observed_on<=v_eod
     order by ticker,period_end desc,observed_on desc
+  ), latest_o as (
+    select distinct on(ticker) ticker,controller_pct,public_pct,treasury_pct
+    from public.cak_idx_ownership_snapshot
+    where source_verified and observed_on<=v_eod
+    order by ticker,observed_on desc,ingested_at desc
   ), event_state as (
     select c.ticker,
       exists(
@@ -383,10 +388,14 @@ begin
       least(100,greatest(0,0.35*ret20_rank+0.25*ret60_rank+20*(case when close>ma20 and ma20>ma60 then 1 else 0 end)+20*least(1,close/nullif(resistance60,0)))) momentum_score,
       least(100,greatest(0,0.60*value_rank+0.20*frequency_rank+0.20*least(1,observations/100.0)*100)) liquidity_score,
       case when i.current_close>i.prior20 then 75 when i.current_close is null or i.prior20 is null then 45 else 25 end regime_score,
-      least(100,greatest(0,100-35*e.active_suspension::int-15*e.recent_uma::int-15*e.recent_dilution::int-10*greatest(coalesce(c.spread,0)-1,0))) risk_score,
+      least(100,greatest(0,100-35*e.active_suspension::int-15*e.recent_uma::int-15*e.recent_dilution::int
+        -10*greatest(coalesce(c.spread,0)-1,0)
+        -10*(case when o.public_pct is not null and o.public_pct<7.5 then 1 else 0 end)
+        -5*(case when o.controller_pct is not null and o.controller_pct>85 then 1 else 0 end))) risk_score,
       e.active_suspension,e.recent_uma,e.recent_dilution
     from cross_ranked c
     left join latest_f f using(ticker)
+    left join latest_o o using(ticker)
     left join event_state e using(ticker)
     cross join ihsg i
   ), scored as (
