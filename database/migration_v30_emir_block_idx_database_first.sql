@@ -336,7 +336,7 @@ begin
         else null end sl,
       case when resistance60>close then resistance60 end structural_tp1
     from agg a
-  ), cross as (
+  ), cross_ranked as (
     select m.*,
       100*percent_rank() over(order by coalesce(foreign_share,-1)) foreign_rank,
       100*percent_rank() over(order by foreign_positive20) persistence_rank,
@@ -359,7 +359,7 @@ begin
       ) active_suspension,
       exists(select 1 from public.cak_idx_events e where e.ticker=c.ticker and e.event_type='UMA' and e.event_date between v_eod-14 and v_eod) recent_uma,
       exists(select 1 from public.cak_idx_events e where e.ticker=c.ticker and e.event_family='ISSUED_HISTORY' and e.event_type in ('HMETD','TANPA_HMETD','PRIVATE_PLACEMENT','RIGHTS_ISSUE','WARAN') and e.event_date between v_eod-45 and v_eod) recent_dilution
-    from cross c
+    from cross_ranked c
   ), ihsg as (
     select
       (array_agg(close order by trade_date desc))[1] current_close,
@@ -385,7 +385,7 @@ begin
       case when i.current_close>i.prior20 then 75 when i.current_close is null or i.prior20 is null then 45 else 25 end regime_score,
       least(100,greatest(0,100-35*e.active_suspension::int-15*e.recent_uma::int-15*e.recent_dilution::int-10*greatest(coalesce(c.spread,0)-1,0))) risk_score,
       e.active_suspension,e.recent_uma,e.recent_dilution
-    from cross c
+    from cross_ranked c
     left join latest_f f using(ticker)
     left join event_state e using(ticker)
     cross join ihsg i
