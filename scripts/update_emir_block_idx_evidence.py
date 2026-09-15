@@ -40,8 +40,8 @@ def bounds(args: argparse.Namespace) -> tuple[date, date]:
     if args.from_date:
         start = args.from_date
     else:
-        # Exact calendar-month subtraction; for 2026-09-14 this starts
-        # 2026-03-14. Empty non-session weekdays are never synthesized.
+        # Exact calendar-month subtraction; e.g. 2026-09-15 starts at
+        # 2026-03-15. Empty non-session weekdays are never synthesized.
         start = (pd.Timestamp(end) - pd.DateOffset(months=max(1, int(args.months)))).date()
     if start > end:
         raise ValueError("from-date must be on or before to-date")
@@ -55,6 +55,13 @@ def main() -> int:
     start, end = bounds(args)
     sink = SupabaseSink.from_env()
     producer = EmirBlockIdxProducer(BlockIdxClient(), sink)
+    storage_preflight = sink.rpc("cak_prune_storage_v1", {"p_as_of": end.isoformat()})
+    if not isinstance(storage_preflight, dict):
+        raise RuntimeError("storage guard did not return a valid state")
+    if storage_preflight.get("state") == "HARD_STOP":
+        raise RuntimeError(
+            f"database storage hard-stop at {storage_preflight.get('quota_ratio')}; ingestion refused"
+        )
     run_key = f"{PRODUCER_VERSION}:{args.mode}:{start.isoformat()}:{end.isoformat()}"
     sink.ingestion_run(
         run_key,
@@ -66,7 +73,10 @@ def main() -> int:
     )
 
     attempted = loaded = failures = rows_persisted = 0
-    detail: dict[str, object] = {"sessions": {}, "event_rows": {}, "company_rows": 0, "financial_index_rows": 0}
+    detail: dict[str, object] = {
+        "sessions": {}, "event_rows": {}, "company_rows": 0,
+        "financial_index_rows": 0, "storage_preflight": storage_preflight,
+    }
     try:
         for session in weekdays(start, end):
             attempted += 1
@@ -116,6 +126,11 @@ def main() -> int:
             detail["official_fundamental_rows"] = fundamental_rows
             rows_persisted += fundamental_rows
             detail["final_rank"] = producer.refresh_ranking(end)
+
+        storage_postflight = sink.rpc("cak_prune_storage_v1", {"p_as_of": end.isoformat()})
+        detail["storage_postflight"] = storage_postflight
+        if not isinstance(storage_postflight, dict) or storage_postflight.get("state") == "HARD_STOP":
+            raise RuntimeError(f"database storage hard-stop after ingestion: {storage_postflight}")
 
         status = "COMPLETED" if loaded > 0 and failures == 0 else "COMPLETED_PARTIAL"
         if loaded == 0:
