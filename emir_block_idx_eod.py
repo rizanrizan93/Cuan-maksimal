@@ -319,7 +319,7 @@ def generic_events(payload: Any, family: str, source_url: str, observed_on: date
         )
         source_ref = _clean(
             item.get("UMAID") or item.get("AnnouncementNo") or item.get("Data_Download")
-            or item.get("Attachment") or item.get("ID") or _payload_hash(item)
+            or item.get("Attachment") or item.get("ID") or item.get("Id") or item.get("id") or _payload_hash(item)
         )
         if not event_date:
             continue
