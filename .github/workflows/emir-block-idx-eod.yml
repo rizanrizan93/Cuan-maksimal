@@ -62,7 +62,7 @@ jobs:
           import os
           url=os.environ.get("SUPABASE_URL","")
           key=os.environ.get("SUPABASE_SECRET_KEY","")
-          assert "vbtpwpmkfxzqeuvztcmz.supabase.co" in url, "workflow must target dedicated EMIR v2"
+          assert "nredhspgvrqapycpakay.supabase.co" in url, "workflow must target dedicated EMIR v2"
           assert key and not key.startswith(("eyJ","sb_publishable_")), "backend sb_secret key required"
           PY
       - name: Load completed official IDX evidence
@@ -86,5 +86,6 @@ jobs:
             echo "- Scanner mode: database only"
             echo "- Scheduled: 17:30 WIB plus idempotent 18:30 WIB retry"
             echo "- Historical default: six calendar months"
+            echo "- Storage: 500 MiB quota; prune at each run; hard-stop at 470 MiB"
             echo "- Ranking contract: EMIR_BLOCK_IDX_FEATURE_V1"
           } >> "$GITHUB_STEP_SUMMARY"
