@@ -98,10 +98,11 @@ The supplied legacy gzip was valid as a compressed stream but its logical SQL en
 4. Apply `database/migration_v33_emir_block_idx_events_eod.sql`.
 5. Apply `database/migration_v34_emir_company_and_eod_resilience.sql`.
 6. Apply `database/migration_v35_emir_ownership_finalists.sql`.
-7. Run `database/verify_v30_emir_block_idx_database_first.sql`.
-8. Point GitHub secrets `SUPABASE_URL` and `SUPABASE_SECRET_KEY` to project `nredhspgvrqapycpakay`.
-9. Dispatch the EOD workflow once in backfill mode with the exact dates above.
-10. Verify session coverage, endpoint manifests, storage state, rank count, zero guardrail bypasses, and Top‑3.
-11. Merge/deploy the application with `CAK_SCAN_DATABASE_ONLY=1`.
+7. Apply `database/migration_v36_emir_security_performance_cleanup.sql`.
+8. Run `database/verify_v30_emir_block_idx_database_first.sql`.
+9. Point GitHub secrets `SUPABASE_URL` and `SUPABASE_SECRET_KEY` to project `nredhspgvrqapycpakay`.
+10. Dispatch the EOD workflow once in backfill mode with the exact dates above.
+11. Verify session coverage, endpoint manifests, storage state, rank count, zero guardrail bypasses, and Top‑3.
+12. Merge/deploy the application with `CAK_SCAN_DATABASE_ONLY=1`.
 
-The target project is active and its compact legacy salvage is validated. A completed six-month official Block IDX backfill is still a distinct operational checkpoint and must be verified from ingestion manifests before it is claimed complete.
+The target project is active, its compact legacy salvage is validated, and the official six-month core/event backfill is complete through the latest closed session. The current Jakarta trading day remains intentionally pending until the after-close jobs observe a non-empty official payload.
