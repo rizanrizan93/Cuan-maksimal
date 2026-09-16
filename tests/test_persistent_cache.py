@@ -138,12 +138,12 @@ def test_cache_bundle_rejects_hash_mismatch(monkeypatch):
     assert not pc.cache_commit_succeeded(verify)
 
 
-def test_app_contains_resumable_cache_checkpoint_flow():
+def test_app_production_ui_is_database_only_deep_900():
     source = (ROOT / "app.py").read_text()
-    assert "resumable chunked scan" in source
-    assert "Ticker per checkpoint" in source
-    assert "KSEI untuk target deep review" in source
-    assert "process_next_job_step" in source
+    assert "DATABASE_ONLY_DEEP_900" in source
+    assert "Ticker per checkpoint" not in source
+    assert "KSEI untuk target deep review" not in source
+    assert 'file_uploader("Upload CSV ticker"' not in source
     assert "CACHE_NOT_COMMITTED" not in source
 
 
