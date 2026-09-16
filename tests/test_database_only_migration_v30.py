@@ -63,3 +63,13 @@ def test_top3_execution_levels_are_idx_tick_executable():
     assert "price_fraction_state','idx_tick_executable'" in sql
     for threshold in ("p_price < 200", "p_price < 500", "p_price < 2000", "p_price < 5000"):
         assert threshold in sql
+
+
+def test_database_deep_900_reports_missing_required_evidence():
+    sql = (ROOT / "database" / "migration_v35_database_deep_900_gap_report.sql").read_text(encoding="utf-8").lower()
+    assert "target_universe',900" in sql
+    assert "limit least(greatest(p_limit,1),900)" in sql
+    assert "official_fundamental_metrics" in sql
+    assert "official_ownership" in sql
+    assert "execution_blocked_missing_critical_evidence" in sql
+    assert "from public,anon,authenticated" in sql

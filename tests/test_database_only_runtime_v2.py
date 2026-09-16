@@ -36,12 +36,14 @@ def test_snapshot_is_database_only_and_ready(monkeypatch):
                 {"ticker": value, "ownership": {"public_pct": 20}, "recent_events": []}
                 for value in ("DMAS", "TAPG", "MIKA")
             ])
+        if url.endswith("cak_idx_database_gap_report_v1"):
+            return _Response({"summary": {"selected_tickers": 1}, "rows": []})
         raise AssertionError(url)
 
     monkeypatch.setattr(runtime.requests, "post", fake_post)
     snapshot = runtime.load_database_only_snapshot(_config())
 
-    assert snapshot.state == "DATABASE_ONLY_READY"
+    assert snapshot.state == "DATABASE_ONLY_DEEP_900_READY"
     assert snapshot.ranking["ticker"].tolist() == ["DMAS"]
     assert snapshot.top3["ticker"].tolist() == ["DMAS", "TAPG", "MIKA"]
     assert snapshot.top3["public_pct"].tolist() == [20, 20, 20]
@@ -53,11 +55,34 @@ def test_snapshot_fails_closed_when_top3_is_incomplete(monkeypatch):
     def fake_post(url, **kwargs):
         if url.endswith("cak_idx_database_health_v2"):
             return _Response({"latest_market_date": "2026-09-14", "latest_rank_date": "2026-09-14"})
+        if url.endswith("cak_idx_database_gap_report_v1"):
+            return _Response({"summary": {"selected_tickers": 0}, "rows": []})
         return _Response([])
 
     monkeypatch.setattr(runtime.requests, "post", fake_post)
     snapshot = runtime.load_database_only_snapshot(_config())
     assert snapshot.state == "DATABASE_SOURCE_NOT_READY"
+
+
+def test_snapshot_surfaces_missing_database_evidence(monkeypatch):
+    def fake_post(url, **kwargs):
+        if url.endswith("cak_idx_database_health_v2"):
+            return _Response({"latest_market_date": "2026-09-15", "latest_rank_date": "2026-09-15"})
+        if url.endswith("cak_load_latest_idx_rank_v2"):
+            return _Response([{"ticker": "ABCD"}])
+        if url.endswith("cak_load_latest_idx_top3_v3"):
+            return _Response([{"ticker": value} for value in ("A", "B", "C")])
+        if url.endswith("cak_idx_database_gap_report_v1"):
+            return _Response({
+                "summary": {"selected_tickers": 1, "critical_gap_tickers": 1},
+                "rows": [{"ticker": "ABCD", "missing_required": ["OFFICIAL_FUNDAMENTAL_METRICS"]}],
+            })
+        raise AssertionError(url)
+
+    monkeypatch.setattr(runtime.requests, "post", fake_post)
+    snapshot = runtime.load_database_only_snapshot(_config())
+    assert snapshot.gap_summary["critical_gap_tickers"] == 1
+    assert snapshot.evidence_gaps.iloc[0]["ticker"] == "ABCD"
 
 
 def test_market_panel_normalizes_frames_without_online_fallback(monkeypatch):
