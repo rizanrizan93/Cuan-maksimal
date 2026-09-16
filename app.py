@@ -399,7 +399,7 @@ with st.expander("Database connection & resumable-job readiness", expanded=False
 with st.sidebar:
     st.header("EMIR Deep Review 900")
     st.success("DATABASE_ONLY_DEEP_900")
-    st.caption("Seluruh evidence sudah dikoleksi EOD. Halaman ini hanya membaca database.")
+    st.caption("Evidence dikoleksi dan divalidasi setelah pasar tutup. Halaman ini hanya membaca database.")
 
 scan_mode = "EMIR_DATABASE_DEEP_900"
 universe_file = None
@@ -444,6 +444,12 @@ if scan_mode == "EMIR_DATABASE_DEEP_900":
         f"referensi emiten: {int(gap.get('missing_company_reference') or 0)} · "
         f"event feed: {'READY' if gap.get('event_feed_ready') else 'STALE'}"
     )
+    st.caption(
+        f"XBRL worker — pending: {int(gap.get('fundamental_queue_pending') or 0)} · "
+        f"parse gagal: {int(gap.get('fundamental_parse_failed') or 0)} · "
+        f"filing resmi tidak tersedia: {int(gap.get('officially_unavailable_fundamental') or 0)} · "
+        f"instrumen khusus: {int(gap.get('special_instruments') or 0)}"
+    )
     if int(gap.get("critical_gap_tickers") or 0)>0:
         st.warning(
             "Ada evidence wajib yang belum tersedia di database. Saham terkait tetap terlihat dalam ranking "
@@ -453,6 +459,7 @@ if scan_mode == "EMIR_DATABASE_DEEP_900":
         with st.expander("Daftar missing evidence per saham", expanded=True):
             gap_columns = [column for column in (
                 "overall_rank", "ticker", "data_completeness_pct", "missing_required",
+                "fundamental_ingestion_state", "fundamental_ingestion_error",
                 "gap_effect", "blocker",
             ) if column in database_snapshot.evidence_gaps.columns]
             safe_dataframe(database_snapshot.evidence_gaps[gap_columns], width="stretch", hide_index=True)
