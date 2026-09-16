@@ -357,20 +357,20 @@ def secrets_mapping() -> Any:
 
 
 def render_methodology() -> None:
-    with st.expander("Kontrak Emir Public Framework — public-only clean-room", expanded=False):
+    with st.expander("Kontrak EMIR Database-Only Deep 900", expanded=False):
         st.markdown(
             """
-Scanner ini memodelkan kerangka publik Emir melalui pipeline otomatis: **ticker → persistent cache → incremental OHLCV/KSEI/news/fundamental → market/sector context → thesis → flow/inventory proxy → market structure → EOD microstructure proxy → scenario/invalidation/risk**.
+Scanner produksi membaca snapshot database setelah penutupan: **Top 900 → harga/foreign/liquidity → fundamental resmi → ownership → narrative/regulatory events → struktur SMC/ICT → ranking → Top 3 execution**.
 
-Broker inventory dan bid–offer otomatis adalah `EMPIRICAL_PROXY`, bukan data broker atau live market depth. `EMIR_AUTO_EOD_READY` memakai position cap rendah; `EMIR_READY_WITH_PRECISE_TRIGGER` tetap memerlukan direct evidence. Bobot numerik bukan formula resmi CAK.
+Tidak ada provider online saat halaman dibuka atau scan dijalankan. Data yang belum tersedia diberi status missing evidence dan tidak diimputasi sebagai fakta.
             """
         )
 
 
 st.title("IDX Emir Autonomous Scanner")
 st.caption(
-    f"Versi {ENGINE_VERSION} · resumable chunked scan · progressive deep review · "
-    "hasil dan evidence dipindahkan ke Supabase secara terukur"
+    f"Versi {ENGINE_VERSION} · database-only deep review Top 900 · "
+    "ranking dan evidence dihitung setelah penutupan"
 )
 if RUNTIME_RELOADED_MODULES:
     st.caption("Runtime hot-reload diselaraskan ke satu release contract.")
@@ -397,89 +397,15 @@ with st.expander("Database connection & resumable-job readiness", expanded=False
         safe_dataframe(preflight, width="stretch", hide_index=True)
 
 with st.sidebar:
-    st.header("Resumable Emir Scan")
-    universe_file = st.file_uploader("Upload CSV ticker", type=["csv"], key="universe")
-    scan_mode = st.selectbox(
-        "Mode",
-        ["EMIR_DATABASE_FAST_900", "EMIR_AUTONOMOUS_HYBRID_400_TO_DEEP", "EMIR_AUTONOMOUS_DEEP_REVIEW", "EMIR_FLOW_RADAR_ONLY"],
-        help="DATABASE_FAST membaca evidence dan ranking yang sudah dihitung setelah penutupan, tanpa provider online.",
-    )
-    period = st.selectbox("OHLCV history", ["3y", "5y"], index=1)
-    completed_only = st.checkbox("Gunakan completed daily session saja", value=True)
-    workers = st.slider("Concurrent provider workers", 1, 4, 3)
-    chunk_size = st.slider("Ticker per checkpoint", 10, 30, 20, 5, help="Setiap batch disimpan sebelum batch berikutnya.")
-    deep_scope_label = st.selectbox(
-        "Cakupan deep review",
-        [
-            "Optimal harian — Recall 150",
-            "Seimbang — Top 60",
-            "Cepat — Top 30",
-            "Semua ticker eligible (full deep refresh)",
-            "Batas custom",
-        ],
-        index=0,
-        disabled=scan_mode == "EMIR_FLOW_RADAR_ONLY",
-        help=(
-            "Recall 150 adalah default harian: seluruh universe tetap diranking. Deep review mengambil 100 core "
-            "berdasarkan Emir discovery rank, lalu menambah hingga 20 growth/turnaround fundamental recall, "
-            "12 smart-money/liquidity, 10 structure/absorption, dan 8 reversal/seller-exhaustion. "
-            "Overlap antar-lane diisi kembali dari discovery rank sampai maksimal 150. Full deep refresh tetap tersedia."
-        ),
-    )
-    deep_review_scope = {
-        "Optimal harian — Recall 150": "DAILY_RECALL_150",
-        "Seimbang — Top 60": "BALANCED_TOP_60",
-        "Cepat — Top 30": "FAST_TOP_30",
-        "Semua ticker eligible (full deep refresh)": "ALL_ELIGIBLE",
-        "Batas custom": "CUSTOM_LIMIT",
-    }[deep_scope_label]
-    deep_limit = st.slider(
-        "Batas custom deep review",
-        5,
-        500,
-        100,
-        5,
-        disabled=scan_mode == "EMIR_FLOW_RADAR_ONLY" or deep_review_scope != "CUSTOM_LIMIT",
-    )
-    news_per_ticker = st.slider("News per deep ticker per provider", 2, 10, 6, disabled=scan_mode == "EMIR_FLOW_RADAR_ONLY")
-    use_google_news = st.checkbox("Google News RSS", value=True, disabled=scan_mode == "EMIR_FLOW_RADAR_ONLY")
-    use_yahoo_news = st.checkbox("Yahoo public news", value=True, disabled=scan_mode == "EMIR_FLOW_RADAR_ONLY")
-    auto_ksei = st.checkbox("KSEI untuk target deep review", value=True)
-    auto_fundamental = st.checkbox("Fundamental public proxy untuk target deep review", value=True, disabled=scan_mode == "EMIR_FLOW_RADAR_ONLY")
-    auto_idx_official_fundamental = st.checkbox("IDX official XBRL untuk deep universe (recommended)", value=True, disabled=scan_mode == "EMIR_FLOW_RADAR_ONLY")
-    official_fundamental_limit = st.slider(
-        "Batas IDX official deep review",
-        10,
-        500,
-        150,
-        10,
-        disabled=not auto_idx_official_fundamental or scan_mode == "EMIR_FLOW_RADAR_ONLY",
-        help="Default harian 150. Gunakan 400 hanya untuk full deep refresh terencana; cache official yang sudah ada tetap dipakai ulang untuk seluruh universe.",
-    )
-    force_cache_refresh = st.checkbox("Paksa refresh cache", value=False)
-    capital_mode = st.selectbox("Capital mode", ["GUARDED_REAL_MONEY", "RESEARCH"], index=0)
-    capital = st.number_input("Modal (IDR)", min_value=100_000.0, value=5_000_000.0, step=100_000.0)
-    risk_pct = st.slider("Risk budget per idea (%)", 0.25, 2.0, 0.5 if capital_mode == "GUARDED_REAL_MONEY" else 1.0, 0.25)
-    max_position_cap_pct = st.slider("Maximum position cap (%)", 2.0, 30.0, 10.0 if capital_mode == "GUARDED_REAL_MONEY" else 20.0, 1.0)
-    calibration_mode = st.selectbox("Outcome calibration mode", ["GUARDED", "SHADOW_ONLY"], index=0 if capital_mode == "GUARDED_REAL_MONEY" else 1)
-    if capital_mode == "GUARDED_REAL_MONEY":
-        st.warning("Mode modal riil: Yahoo/public statement tetap boleh memberi fundamental score dan kandidat MANUAL_CONFIRMATION_REQUIRED bila data current/berkualitas. Official IDX/issuer adalah confidence upgrade; DIRECT_VERIFIED_READY tetap hanya jika official/cash-flow + direct IDX integrity + live bid-offer lolos. Risk proxy-only dibatasi maksimum 0,50%.")
+    st.header("EMIR Deep Review 900")
+    st.success("DATABASE_ONLY_DEEP_900")
+    st.caption("Seluruh evidence sudah dikoleksi EOD. Halaman ini hanya membaca database.")
 
-    broker_file = narrative_file = ownership_file = orderbook_file = idx_integrity_file = outcome_file = None
-    with st.expander("Advanced direct-evidence overrides (optional)", expanded=False):
-        broker_file = st.file_uploader("Direct broker inventory CSV", type=["csv"], key="broker")
-        narrative_file = st.file_uploader("Direct narrative/issuer event CSV", type=["csv"], key="narrative")
-        ownership_file = st.file_uploader("Direct ownership/free-float CSV", type=["csv"], key="ownership")
-        orderbook_file = st.file_uploader("Direct bid-offer CSV", type=["csv"], key="orderbook")
-        idx_integrity_file = st.file_uploader("Direct IDX integrity CSV", type=["csv"], key="idx_integrity")
-        outcome_file = st.file_uploader("Verified outcome memory CSV", type=["csv"], key="outcomes")
-    st.caption(
-        "Deep review berjalan progresif per checkpoint dan disimpan ke database job. Bila koneksi terputus, "
-        "buka kembali lalu lanjutkan; ticker yang sudah selesai tidak diulang."
-    )
+scan_mode = "EMIR_DATABASE_DEEP_900"
+universe_file = None
 
-if scan_mode == "EMIR_DATABASE_FAST_900":
-    st.markdown("### EMIR Database-Only — Ranking & Top 3 Execution")
+if scan_mode == "EMIR_DATABASE_DEEP_900":
+    st.markdown("### EMIR Database-Only — Deep Review Top 900")
     st.caption(
         "Seluruh harga, foreign flow, likuiditas, fundamental resmi, corporate action, UMA, "
         "suspensi, ranking, dan geometri eksekusi dibaca dari Supabase. Tidak ada pencarian "
@@ -499,13 +425,37 @@ if scan_mode == "EMIR_DATABASE_FAST_900":
     h2.metric("Ticker market", int(health.get("market_tickers") or 0))
     h3.metric("Ticker fundamental", int(health.get("fundamental_tickers") or 0))
     h4.metric("Database MiB", f"{float(health.get('database_bytes') or 0)/1024/1024:.1f}")
-    if database_snapshot.state != "DATABASE_ONLY_READY":
+    if database_snapshot.state != "DATABASE_ONLY_DEEP_900_READY":
         st.warning(
             "Top 3 tidak diterbitkan karena sesi market/ranking belum sinkron atau kandidat "
             "EXECUTION_READY belum tepat tiga. Ranking riset tetap ditampilkan."
         )
     else:
-        st.success("DATABASE_ONLY_READY · Top 3 berasal dari snapshot EOD resmi yang sama.")
+        st.success("DATABASE_ONLY_DEEP_900_READY · 900 saham diproses dengan kontrak evidence yang sama.")
+    gap = database_snapshot.gap_summary
+    g1, g2, g3, g4 = st.columns(4)
+    g1.metric("Deep reviewed", int(gap.get("deep_reviewed_tickers") or 0))
+    g2.metric("Critical gaps", int(gap.get("critical_gap_tickers") or 0))
+    g3.metric("Fundamental kosong", int(gap.get("missing_fundamental_metrics") or 0))
+    g4.metric("Ownership kosong", int(gap.get("missing_ownership") or 0))
+    st.caption(
+        f"Gap lain — history <80 sesi: {int(gap.get('missing_market_history') or 0)} · "
+        f"katalog filing: {int(gap.get('missing_filing_catalog') or 0)} · "
+        f"referensi emiten: {int(gap.get('missing_company_reference') or 0)} · "
+        f"event feed: {'READY' if gap.get('event_feed_ready') else 'STALE'}"
+    )
+    if int(gap.get("critical_gap_tickers") or 0)>0:
+        st.warning(
+            "Ada evidence wajib yang belum tersedia di database. Saham terkait tetap terlihat dalam ranking "
+            "riset, tetapi tidak boleh menjadi EXECUTION_READY sampai gap kritis terisi."
+        )
+    if not database_snapshot.evidence_gaps.empty:
+        with st.expander("Daftar missing evidence per saham", expanded=True):
+            gap_columns = [column for column in (
+                "overall_rank", "ticker", "data_completeness_pct", "missing_required",
+                "gap_effect", "blocker",
+            ) if column in database_snapshot.evidence_gaps.columns]
+            safe_dataframe(database_snapshot.evidence_gaps[gap_columns], width="stretch", hide_index=True)
     if not database_snapshot.top3.empty:
         top3_columns = [column for column in (
             "execution_rank", "ticker", "company_name", "sector", "execution_score", "emir_score", "entry_price",
