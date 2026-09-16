@@ -11,7 +11,7 @@ import requests
 from persistence import DatabaseConfig, _headers
 
 
-DATABASE_ONLY_RUNTIME_VERSION = "EMIR_BLOCK_IDX_DATABASE_ONLY_RUNTIME_V2"
+DATABASE_ONLY_RUNTIME_VERSION = "EMIR_BLOCK_IDX_DATABASE_ONLY_DEEP_900_V3"
 
 
 @dataclass(frozen=True)
@@ -19,6 +19,8 @@ class DatabaseOnlySnapshot:
     health: dict[str, Any]
     ranking: pd.DataFrame
     top3: pd.DataFrame
+    gap_summary: dict[str, Any]
+    evidence_gaps: pd.DataFrame
     state: str
 
 
@@ -46,7 +48,7 @@ def _rpc(config: DatabaseConfig, function_name: str, payload: dict[str, Any]) ->
 def load_database_only_snapshot(
     config: DatabaseConfig,
     *,
-    rank_limit: int = 1000,
+    rank_limit: int = 900,
 ) -> DatabaseOnlySnapshot:
     """Load a frozen server-side decision snapshot without any provider fallback."""
     health = _rpc(config, "cak_idx_database_health_v2", {})
@@ -56,8 +58,16 @@ def load_database_only_snapshot(
         {"p_limit": min(1000, max(1, int(rank_limit)))},
     )
     top3_payload = _rpc(config, "cak_load_latest_idx_top3_v3", {})
+    gap_payload = _rpc(
+        config,
+        "cak_idx_database_gap_report_v1",
+        {"p_limit": min(900, max(1, int(rank_limit)))},
+    )
     ranking = pd.DataFrame(ranking_payload if isinstance(ranking_payload, list) else [])
     top3 = pd.DataFrame(top3_payload if isinstance(top3_payload, list) else [])
+    gap_payload = gap_payload if isinstance(gap_payload, dict) else {}
+    gap_summary = gap_payload.get("summary") if isinstance(gap_payload.get("summary"), dict) else {}
+    evidence_gaps = pd.DataFrame(gap_payload.get("rows") if isinstance(gap_payload.get("rows"), list) else [])
     if not top3.empty and "ownership" in top3.columns:
         ownership = top3["ownership"].apply(lambda value: value if isinstance(value, dict) else {})
         for source, target in (
@@ -76,8 +86,16 @@ def load_database_only_snapshot(
     latest_rank = str(health.get("latest_rank_date") or "")
     source_ready = bool(latest_market and latest_rank and latest_market == latest_rank)
     top3_ready = len(top3.index) == 3
-    state = "DATABASE_ONLY_READY" if source_ready and top3_ready else "DATABASE_SOURCE_NOT_READY"
-    return DatabaseOnlySnapshot(health=health, ranking=ranking, top3=top3, state=state)
+    deep_900_ready = int(gap_summary.get("selected_tickers") or 0) == min(900, len(ranking.index))
+    state = "DATABASE_ONLY_DEEP_900_READY" if source_ready and top3_ready and deep_900_ready else "DATABASE_SOURCE_NOT_READY"
+    return DatabaseOnlySnapshot(
+        health=health,
+        ranking=ranking,
+        top3=top3,
+        gap_summary=gap_summary,
+        evidence_gaps=evidence_gaps,
+        state=state,
+    )
 
 
 def load_database_market_panel(
