@@ -251,13 +251,14 @@ def test_explicit_full_deep_refresh_still_reviews_every_eligible_ticker():
     assert len(shortlist) == 117
 
 
-def test_dashboard_defaults_to_recall_150_not_all_eligible():
+def test_dashboard_defaults_to_database_deep_900_only():
     source = (ROOT / "app.py").read_text()
-    assert '"Optimal harian — Recall 150"' in source
-    assert '"Optimal harian — Recall 150": "DAILY_RECALL_150"' in source
-    assert '"Semua ticker eligible (full deep refresh)": "ALL_ELIGIBLE"' in source
-    assert '"Batas IDX official deep review"' in source
-    assert "\n        150,\n        10," in source
+    migration = (ROOT / "database" / "migration_v35_database_deep_900_gap_report.sql").read_text()
+    assert 'scan_mode = "EMIR_DATABASE_DEEP_900"' in source
+    assert '"Optimal harian — Recall 150"' not in source
+    assert '"Batas IDX official deep review"' not in source
+    assert "'target_universe',900" in migration
+    assert "limit least(greatest(p_limit,1),900)" in migration
 
 
 def test_daily_recall_150_records_selection_lane_reasons():
